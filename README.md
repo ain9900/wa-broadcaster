@@ -1,157 +1,182 @@
-# Announcement Sender
+# WA Broadcaster
 
-Link WhatsApp accounts by scanning a QR code, then post one message to many groups across those accounts.
+Link WhatsApp accounts by scanning a QR code, then send one message to many **groups** and/or **individual contacts** across those accounts, safely paced, scheduled and tracked.
 
-> **Important:** this uses an unofficial WhatsApp Web connection (the Baileys library). It is against WhatsApp's terms, and numbers can be banned, especially for fast or bulk sending. Post only to groups you are a real member of, keep the pause between groups at 8 seconds or more, and test with a number you can afford to lose.
+> **Important:** this uses an unofficial WhatsApp Web connection (Baileys, or Evolution API, which is built on it). That is against WhatsApp's terms, and numbers can be banned, especially for fast or bulk sending. Post only to groups you really belong to, keep waits between groups at 8 seconds or more, and test with a number you can afford to lose.
 
-## What it does
+## Features
 
-- **Password login:** one password protects the whole dashboard.
-- **Accounts tab:** link a WhatsApp account by scanning a QR code. The login is saved, so it reconnects by itself after restarts. You can link several accounts.
-- **Send tab:** write a message once (bold, italic and a preview included), tick groups from any connected account, then send. It posts one group at a time with a short "typing…" before each message.
-- **Attachments:** a photo, video, audio or document (up to 25 MB). The message becomes its caption.
-- **Timing:**
-  - *Wait between groups*: a random time in your range, e.g. 10 to 25 seconds.
-  - *Take a break after*: e.g. after every 10 groups, rest 5 minutes (0 = no breaks).
-  - *When to send*: now or a chosen date and time. Sends wait in a queue and run one after another.
-  - It shows roughly how long the whole send will take.
-- **Daily limit per account** (Accounts tab): stop an account after N messages a day; extra groups are skipped and shown in History. Each account card shows how many it sent today.
-- **Group sets:** save a selection of groups (e.g. "Staff") and pick it again in one tap.
-- **History tab:** see what was sent, which groups failed or were skipped and why, and reuse a past message, file and groups.
-- **Templates:** save messages you send often.
+- **Accounts:** link any number of WhatsApp accounts by QR code. Logins are kept and reconnect by themselves. Per-account daily limits.
+- **Contacts:** save numbers with names, organise them into lists, import from a pasted list or CSV (Excel / Google Sheets), and export to CSV. Local numbers like `017…` get your default country code. Opted-out contacts are never messaged.
+- **Send to individuals:** pick contact lists, single contacts or paste numbers. Choose which accounts send them; the work is shared out between those accounts in turn. Each number is checked for WhatsApp before sending. `{name}` (or `{name|friend}` with a fallback) puts each person's name in the message.
+- **Composer:** WhatsApp formatting (bold, italic, strike, mono) with a live chat-bubble preview, attachments up to 25 MB (photo, video, GIF, audio, document), templates and saved group sets.
+- **Safe sending:** one group at a time, a random wait in your range, optional breaks after every N groups, "typing…" before each message, and daily limits per account.
+- **Scheduling and queue:** send now or at a set time. Sends queue and run one after another.
+- **Live campaign status:** open a campaign to see who is being sent to right now, who's next, a countdown, sent/failed/skipped/waiting counts, and time left.
+- **Control:** pause, resume, cancel, and "retry failed" for any campaign. A crash or restart resumes where it stopped, without double-sending.
+- **Dashboard:** live progress, today's numbers, and the last 7 days.
+- **Reports:** pick a date range to see totals, delivery rate, messages per day, results by account, by campaign, and by groups vs contacts, plus the most common failure reasons. Download as CSV, or download one campaign's full recipient report.
+- **Multi-user:** Django users, with the admin panel at `/admin/`.
 
-Scheduled sends only run while the server is running, so on your computer keep `npm start` open. On the VPS, PM2 keeps it running.
+## Architecture
+
+```
+ Browser ──► React UI (Vite / Nginx) ──/api──► Django REST API ──► PostgreSQL
+                                                   │    ▲
+                                    Celery beat ──►│    │ webhooks (connection / group changes)
+                                    Celery worker ─┤    │
+                                     (Redis broker)│    │
+                                                   ▼    │
+                                     WhatsApp provider (WA_PROVIDER)
+                                     ├─ builtin:   ./gateway  (Node + Baileys, internal HTTP API)
+                                     └─ evolution: Evolution API v2
+```
+
+| Folder | What it is |
+|---|---|
+| `backend/` | Django 5 + Django REST Framework. Apps: `core` (auth, settings, dashboard), `whatsapp` (accounts, groups, providers), `contacts` (numbers, lists, import/export), `broadcasts` (campaigns, sending engine, reports, templates, sets, media). |
+| `gateway/` | Small Node service that holds the WhatsApp (Baileys) connections. Internal only, protected by `GATEWAY_API_KEY`. |
+| `frontend/` | React + TypeScript + Vite single-page app. |
+| `docker-compose.yml` | The full stack: Postgres, Redis, Django (gunicorn), Celery worker and beat, gateway, Nginx serving the UI, and optionally Evolution API. |
+| `scripts/` | `setup` and `dev` helpers for running without Docker. |
+| `deploy/` | Host Nginx config for HTTPS on a VPS. |
+
+**How sending works:** Celery beat checks every 5 seconds for a due campaign and hands it to a worker. The worker sends to one group, saves the result in the database, waits, and moves to the next group. All progress lives in Postgres, so pausing, cancelling, a restart or a crash never loses track. A group that was mid-send during a crash is marked "may or may not have arrived" rather than sent twice.
 
 ---
 
-## 1. Run it on your computer (localhost)
+## 1. Run with Docker (recommended)
 
-You need **Node.js 20 or newer** (download from nodejs.org).
-
-```bash
-cd wa-broadcaster
-npm install
-cp .env.example .env        # on Windows: copy .env.example .env
-```
-
-Open `.env` and set:
-
-- `ADMIN_PASSWORD`: your dashboard password
-- `SESSION_SECRET`: any long random text. You can generate one with:
-  `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
-
-Start it:
+Install **Docker Desktop** (Windows/Mac) or Docker Engine (Linux), then:
 
 ```bash
-npm start
+cp .env.example .env          # Windows: copy .env.example .env
 ```
 
-Open **http://localhost:3000**, sign in, and go to **Accounts**:
+Edit `.env` and set at least `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`, `GATEWAY_API_KEY` and `ADMIN_PASSWORD` to long random values. Set `DJANGO_DEBUG=false`. (`node scripts/setup.mjs` can fill these in for you.)
 
-1. Type a name (e.g. "Office phone") and click **Link a new account**.
-2. On the phone: WhatsApp → **Settings** → **Linked devices** → **Link a device**.
-3. Scan the QR code on the screen. After a few seconds it shows **Connected** and loads the groups.
+```bash
+docker compose up -d --build
+```
 
-Then go to **Send**, write a message, tick some groups and click **Send**.
+Open **http://localhost:8080** and sign in as `admin` with your `ADMIN_PASSWORD`.
 
-Stop the app with `Ctrl + C`. Your linked accounts stay saved in the `data/` folder.
+Useful commands:
+
+```bash
+docker compose ps                         # what's running
+docker compose logs -f worker gateway     # watch sending and WhatsApp
+docker compose exec backend python manage.py createsuperuser   # add another user
+docker compose down                       # stop (data stays in Docker volumes)
+```
+
+## 2. Run without Docker (quick local development)
+
+Needs **Node.js 20+** and **Python 3.11+**. No Postgres or Redis needed: it uses SQLite and a built-in worker.
+
+```bash
+npm run setup     # creates .env with random secrets, Python venv, database, npm packages
+npm run dev       # starts gateway, Django, worker and the UI together
+```
+
+Open **http://localhost:5173**. `setup` prints the admin password (it's also in `.env` as `ADMIN_PASSWORD`).
+
+To use Postgres and Redis locally instead, set `DATABASE_URL` and `REDIS_URL` in `.env`. `npm run dev` then runs a Celery worker instead of the built-in one.
+
+Tests: `npm test` runs the backend test suite.
+
+## 3. Link an account and send
+
+1. **Accounts** → type a name → **Link a new account**.
+2. On the phone: WhatsApp → **Settings** → **Linked devices** → **Link a device**, then scan the QR code.
+3. After a few seconds it shows **Connected** and loads the groups.
+4. **New broadcast** → write the message → pick **Groups** and/or **Contacts** → check the timing → **Send**.
+5. Click the campaign to watch its live status.
+
+To message individuals, first add numbers on the **Contacts** page (or paste them straight into the composer).
+
+> Messaging people who haven't saved your number carries a much higher ban risk than posting in groups. Only message people who expect it, honour opt-outs, keep waits long, and start with small lists.
 
 ---
 
-## 2. Put it on your Hostinger VPS
+## 4. Deploy to a VPS (Ubuntu 22.04 / 24.04)
 
-These steps assume Ubuntu 22.04 or 24.04 (Hostinger's default VPS image) and a domain or subdomain, for example `wa.yourdomain.com`, whose DNS **A record** points to the VPS IP.
-
-### a. Install Node.js, PM2 and Nginx
-
-SSH into the VPS (`ssh root@YOUR_VPS_IP`), then:
+Point a domain's DNS **A record** (e.g. `wa.yourdomain.com`) at the VPS IP, then SSH in:
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt install -y nodejs nginx
-npm install -g pm2
-```
+# Docker
+curl -fsSL https://get.docker.com | sh
 
-### b. Upload the app
-
-From your computer (in the folder that contains `wa-broadcaster`):
-
-```bash
-scp -r wa-broadcaster root@YOUR_VPS_IP:/opt/
-```
-
-Don't upload `node_modules`. You can also upload `data/` if you want to keep the accounts you linked on localhost, but linking again on the server is cleaner.
-
-On the VPS:
-
-```bash
+# the app
+git clone <your repo> /opt/wa-broadcaster      # or: scp -r the folder (skip node_modules, .venv)
 cd /opt/wa-broadcaster
-npm install --omit=dev
-cp .env.example .env
-nano .env
+cp .env.example .env && nano .env
 ```
 
-In `.env` on the server, set a **strong** `ADMIN_PASSWORD`, a new `SESSION_SECRET`, keep `HOST=127.0.0.1`, and set `COOKIE_SECURE=true` (after HTTPS is working in step d).
+In `.env` on the server:
 
-### c. Keep it running with PM2
+- New long random values for `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`, `GATEWAY_API_KEY`, `ADMIN_PASSWORD`
+- `DJANGO_DEBUG=false`
+- `DJANGO_ALLOWED_HOSTS=wa.yourdomain.com`
+- `DJANGO_CSRF_TRUSTED_ORIGINS=https://wa.yourdomain.com`
+- `DJANGO_SECURE=true`
+- `NUM_PROXIES=2` (host Nginx + the container's Nginx)
+- keep `HTTP_BIND=127.0.0.1` (only the host Nginx can reach the app)
 
 ```bash
-pm2 start server.js --name wa-sender
-pm2 save
-pm2 startup        # run the command it prints, so it starts after a reboot
+docker compose up -d --build
 ```
 
-Useful: `pm2 logs wa-sender`, `pm2 restart wa-sender`.
-
-### d. Nginx and HTTPS
-
-Create `/etc/nginx/sites-available/wa-sender`:
-
-```nginx
-server {
-    listen 80;
-    server_name wa.yourdomain.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-Enable it and add a free HTTPS certificate:
+HTTPS with the host's Nginx and a free certificate:
 
 ```bash
-ln -s /etc/nginx/sites-available/wa-sender /etc/nginx/sites-enabled/
+apt install -y nginx certbot python3-certbot-nginx
+cp deploy/nginx-host.conf /etc/nginx/sites-available/wa-broadcaster
+sed -i 's/wa.yourdomain.com/YOUR.DOMAIN/' /etc/nginx/sites-available/wa-broadcaster
+ln -s /etc/nginx/sites-available/wa-broadcaster /etc/nginx/sites-enabled/
 nginx -t && systemctl reload nginx
-apt install -y certbot python3-certbot-nginx
-certbot --nginx -d wa.yourdomain.com
-```
-
-Now set `COOKIE_SECURE=true` in `.env` and run `pm2 restart wa-sender`. Open **https://wa.yourdomain.com**.
-
-Optional firewall:
-
-```bash
+certbot --nginx -d YOUR.DOMAIN
 ufw allow OpenSSH && ufw allow 'Nginx Full' && ufw enable
 ```
 
+Containers restart by themselves after a reboot (`restart: unless-stopped`).
+
+**Updating:** `git pull && docker compose up -d --build`. Migrations run automatically.
+
+**Backups:** the database is `docker compose exec db pg_dump -U wab wab > backup.sql`. WhatsApp logins live in the `wa_sessions` volume and uploads in `media`.
+
 ---
+
+## Using Evolution API instead of the built-in gateway
+
+Evolution API is a popular, feature-rich WhatsApp server (also Baileys-based). To switch:
+
+1. In `.env`: `WA_PROVIDER=evolution` and a long random `EVOLUTION_API_KEY`.
+2. `docker compose --profile evolution up -d --build`
+3. Link accounts again from the **Accounts** page. Each account becomes an Evolution "instance".
+
+You can stop the built-in gateway (`docker compose stop gateway`) once you no longer use it. Accounts linked under one provider don't move to the other.
+
+> The Evolution provider (`backend/apps/whatsapp/providers/evolution.py`) follows the Evolution API v2 docs, but has not been tested against a live Evolution server. Check it with a test number first.
+
+## Configuration
+
+Everything is in `.env`; `.env.example` documents each value. Sending defaults (waits, breaks, daily limit, typing indicator) are under **Settings** in the app, and each broadcast can change them.
 
 ## Keep it safe
 
-- The `data/sessions/` folder holds the WhatsApp logins. Anyone who copies it can use those accounts. Never share it or commit it to Git.
-- Use a long dashboard password and HTTPS on the VPS.
-- To fully unlink an account, click **Remove** in the dashboard, or on the phone go to **Linked devices** and log out of the device.
+- WhatsApp logins (the `wa_sessions` volume, or `gateway/sessions/` locally) give full access to those accounts. Never share or commit them.
+- Never expose the gateway port (3100) or Redis/Postgres to the internet. Compose keeps them on the internal network.
+- Use HTTPS (`DJANGO_SECURE=true`) and strong passwords on the VPS.
+- To fully unlink an account, click **Remove**, or on the phone open **Linked devices** and log the device out.
 
 ## Troubleshooting
 
-- **QR code never appears / keeps reconnecting:** WhatsApp sometimes changes its protocol. Update the library: `npm install @whiskeysockets/baileys@latest`, then restart.
-- **"Not linked" after a while:** nobody scanned the QR in time. Click **Show QR code**.
-- **"Logged out from phone":** the device was removed on the phone. Click **Show QR code** and scan again.
-- **A group shows "Can't post":** the group only lets admins send messages, and this account isn't an admin.
-- **Send stopped in the middle after a restart:** a send that was running when the server stopped is marked "Interrupted". Use **Reuse** in History to send to the rest.
+| Problem | Fix |
+|---|---|
+| QR code never appears / keeps reconnecting | WhatsApp changed its protocol. Update Baileys: `cd gateway && npm install @whiskeysockets/baileys@6`, then rebuild/restart. |
+| "WhatsApp service is not reachable" banner | The gateway (or Evolution) isn't running. Check `docker compose logs gateway`. |
+| "Not linked" | Nobody scanned the QR in time. Click **Show QR code**. |
+| "Logged out from phone" | The device was removed on the phone. Click **Show QR code** and scan again. |
+| A group shows "Can't post" | Only admins can post there, and this account isn't an admin. |
+| Campaign stuck on "Scheduled" | The worker or beat isn't running: `docker compose logs worker beat`. Without Docker, keep `npm run dev` open. |

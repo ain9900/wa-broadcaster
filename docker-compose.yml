@@ -1,0 +1,138 @@
+# Full stack: PostgreSQL, Redis, Django API, Celery worker + beat, WhatsApp gateway, Nginx + React UI.
+#   docker compose up -d --build                       -> open http://localhost:8080
+#   docker compose --profile evolution up -d --build   -> also starts Evolution API (set WA_PROVIDER=evolution)
+
+x-backend: &backend
+  build: ./backend
+  env_file: .env
+  environment:
+    DATABASE_URL: postgres://wab:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/wab
+    REDIS_URL: redis://redis:6379/0
+    GATEWAY_URL: http://gateway:3100
+    EVOLUTION_URL: http://evolution:8080
+    WEBHOOK_URL: http://backend:8000/api/whatsapp/webhook/
+    DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost},backend,127.0.0.1,localhost
+    NUM_PROXIES: ${NUM_PROXIES:-1}
+    MEDIA_ROOT: /app/media
+    STATIC_ROOT: /app/staticfiles
+  volumes:
+    - media:/app/media
+  depends_on:
+    db: { condition: service_healthy }
+    redis: { condition: service_healthy }
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: wab
+      POSTGRES_USER: wab
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/10-evolution.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wab -d wab"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    <<: *backend
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput -v0 &&
+             python manage.py ensure_admin &&
+             gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120 --access-logfile -"
+    volumes:
+      - media:/app/media
+      - static:/app/staticfiles
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/', timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  worker:
+    <<: *backend
+    # Sends campaigns. One worker process: only one campaign sends at a time by design.
+    command: celery -A config worker --loglevel=info --concurrency=4
+    depends_on:
+      backend: { condition: service_healthy }  # migrations done
+      redis: { condition: service_healthy }
+
+  beat:
+    <<: *backend
+    # Starts due / scheduled campaigns every few seconds.
+    command: celery -A config beat --loglevel=info --schedule /tmp/celerybeat-schedule
+    volumes: []
+    depends_on:
+      backend: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  gateway:
+    build: ./gateway
+    env_file: .env
+    environment:
+      GATEWAY_HOST: 0.0.0.0
+      GATEWAY_WEBHOOK_URL: http://backend:8000/api/whatsapp/webhook/
+      SESSIONS_DIR: /app/sessions
+    volumes:
+      - wa_sessions:/app/sessions
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-8080}:80"
+    volumes:
+      - static:/usr/share/nginx/static:ro
+    depends_on:
+      backend: { condition: service_healthy }
+    restart: unless-stopped
+
+  evolution:
+    profiles: ["evolution"]
+    image: atendai/evolution-api:v2.2.3
+    environment:
+      SERVER_URL: http://evolution:8080
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY:-}
+      DATABASE_ENABLED: "true"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://wab:${POSTGRES_PASSWORD}@db:5432/evolution?schema=public
+      DATABASE_CONNECTION_CLIENT_NAME: evolution
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: redis://redis:6379/6
+      CACHE_REDIS_PREFIX_KEY: evolution
+      CACHE_LOCAL_ENABLED: "false"
+      DEL_INSTANCE: "false"
+      LOG_LEVEL: ERROR,WARN
+    volumes:
+      - evolution_instances:/evolution/instances
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  media:
+  static:
+  wa_sessions:
+  evolution_instances:

@@ -1,3 +1,18 @@
 node_modules/
 data/
 .env
+backend/.venv
+*.pyc
+__pycache__/
+.pytest_cache/
+
+# runtime data: WhatsApp logins, uploads, local database
+gateway/sessions/
+backend/media/
+backend/staticfiles/
+backend/db.sqlite3
+backend/.celerybeat-schedule*
+
+# builds
+frontend/dist/
+*.tsbuildinfo

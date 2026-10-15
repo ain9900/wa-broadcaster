@@ -7,6 +7,7 @@ from apps.broadcasts import runner
 from apps.broadcasts.models import Campaign, CampaignTarget
 from apps.contacts import validation
 from apps.contacts.models import Contact, ContactList
+from tests.helpers import me
 
 pytestmark = pytest.mark.django_db
 
@@ -21,7 +22,7 @@ def test_background_check_marks_numbers(provider, account, contacts):
 
 
 def test_checks_in_batches_of_fifty(provider, account):
-    Contact.objects.bulk_create([Contact(phone=f"8801800{i:06d}") for i in range(120)])
+    Contact.objects.bulk_create([Contact(owner=me(), phone=f"8801800{i:06d}") for i in range(120)])
     assert validation.validate_pending(pause=0) == 120
     assert [len(p) for _, p in provider.checks] == [50, 50, 20]
 
@@ -60,7 +61,7 @@ def test_runner_uses_fresh_results_without_asking_again(provider, account, conta
     validation.validate_pending(pause=0)
     provider.checks.clear()
     Contact.objects.filter(pk=contacts[2].pk).update(checked_at=timezone.now() - timedelta(days=60))  # stale
-    c = Campaign.objects.create(message="x", delay_min_seconds=0, delay_max_seconds=0, batch_size=0)
+    c = Campaign.objects.create(owner=me(), message="x", delay_min_seconds=0, delay_max_seconds=0, batch_size=0)
     c.sender_accounts.set([account])
     for i, ct in enumerate(contacts):
         CampaignTarget.objects.create(campaign=c, contact=ct, recipient_jid=f"{ct.phone}@s.whatsapp.net", position=i)

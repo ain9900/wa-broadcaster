@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from apps.broadcasts.models import Campaign, CampaignTarget
 from apps.contacts.models import Contact, ContactList
+from tests.helpers import me
 
 pytestmark = pytest.mark.django_db
 
@@ -19,7 +20,7 @@ def read_csv(resp):
 
 @pytest.fixture
 def history(account):
-    c = Campaign.objects.create(name="Eid offer", message="x", status="completed")
+    c = Campaign.objects.create(owner=me(), name="Eid offer", message="x", status="completed")
     now = timezone.now()
     rows = [
         ("8801700000009@s.whatsapp.net", "Alpha", "sent", ""),
@@ -60,9 +61,9 @@ def test_report_and_campaign_csv(client, history):
 
 
 def test_contacts_export_round_trips_through_import(client):
-    lst = ContactList.objects.create(name="VIP")
-    Contact.objects.create(phone="8801700000001", name="Rahim").lists.add(lst)
-    Contact.objects.create(phone="8801700000002", name="Karim", opted_out=True)
+    lst = ContactList.objects.create(owner=me(), name="VIP")
+    Contact.objects.create(owner=me(), phone="8801700000001", name="Rahim").lists.add(lst)
+    Contact.objects.create(owner=me(), phone="8801700000002", name="Karim", opted_out=True)
     rows = read_csv(client.get(f"/api/contacts/export/?list={lst.id}"))
     assert rows == [["Name", "Phone", "Lists", "Opted out", "On WhatsApp", "Checked"],
                     ["Rahim", "+8801700000001", "VIP", "", "not checked yet", ""]]

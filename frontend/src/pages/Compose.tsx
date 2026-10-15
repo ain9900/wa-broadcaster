@@ -2,17 +2,26 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import ContactPicker, { emptyPick, pastedCount, pickCount, type ContactPick } from '../components/ContactPicker';
-import { ConfirmButton, Empty, PageHeader, Pill, useToast } from '../components/ui';
+import { Empty, PageHeader, useToast } from '../components/ui';
 import { api, upload } from '../lib/api';
-import { dateTime, duration, fileSize, localInput, plural, previewName, relative, waToHtml } from '../lib/format';
-import type { AccountGroups, CampaignDetail, ContactList, GroupSet, Media, Settings, TargetRef, Template } from '../lib/types';
+import { dateTime, duration, fileSize, localInput, plural, previewName, waToHtml } from '../lib/format';
+import type { AccountsResponse, CampaignDetail, ContactList, Media, Rotation, Settings, Template } from '../lib/types';
 
 const DRAFT_KEY = 'wab-draft-v2';
-const key = (accountId: number, jid: string) => `${accountId}|${jid}`;
-const toRefs = (keys: Iterable<string>): TargetRef[] =>
-  [...keys].map(k => { const i = k.indexOf('|'); return { account_id: Number(k.slice(0, i)), group_jid: k.slice(i + 1) }; });
 
-type Timing = { delay_min_seconds: number; delay_max_seconds: number; batch_size: number; batch_pause_minutes: number; typing_indicator: boolean };
+type Timing = {
+  delay_min_seconds: number; delay_max_seconds: number; batch_size: number; batch_pause_minutes: number; typing_indicator: boolean;
+  rotation_mode: Rotation; rotate_every: number; failover: boolean;
+};
+const TIMING_KEYS = ['delay_min_seconds', 'delay_max_seconds', 'batch_size', 'batch_pause_minutes', 'typing_indicator',
+  'rotation_mode', 'rotate_every', 'failover'] as const;
+const pickTiming = (src: Timing): Timing => Object.fromEntries(TIMING_KEYS.map(k => [k, src[k]])) as Timing;
+
+const ROTATIONS: [Rotation, string, string][] = [
+  ['turns', 'Take turns', 'Each account sends a few messages, then the next one takes over.'],
+  ['random', 'Random', 'Any of the chosen accounts, picked at random for each message.'],
+  ['balanced', 'Fewest sent today', 'The account that has sent the least today goes next.'],
+];
 
 function readDraft(): { message: string; media: Media | null } {
   try { return { media: null, ...JSON.parse(localStorage.getItem(DRAFT_KEY) || '{}') }; } catch { return { message: '', media: null }; }
@@ -29,29 +38,31 @@ export default function Compose() {
   const [message, setMessage] = useState<string>(draft.message || '');
   const [media, setMedia] = useState<Media | null>(draft.media);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [search, setSearch] = useState('');
+  const [linkUrl, setLinkUrl] = useState('');
+  const [senders, setSenders] = useState<number[] | null>(null);
   const [timing, setTiming] = useState<Timing | null>(null);
   const [later, setLater] = useState(false);
   const [when, setWhen] = useState('');
   const [confirming, setConfirming] = useState(false);
-  const [tab, setTab] = useState<'groups' | 'contacts'>('groups');
   const [pick, setPick] = useState<ContactPick>(emptyPick);
   const textRef = useRef<HTMLTextAreaElement>(null);
 
-  const groups = useQuery({ queryKey: ['groups'], queryFn: () => api<AccountGroups[]>('/groups/') });
+  const accounts = useQuery({ queryKey: ['accounts'], queryFn: () => api<AccountsResponse>('/accounts/') });
   const settings = useQuery({ queryKey: ['settings'], queryFn: () => api<Settings>('/settings/') });
   const templates = useQuery({ queryKey: ['templates'], queryFn: () => api<Template[]>('/templates/') });
-  const sets = useQuery({ queryKey: ['group-sets'], queryFn: () => api<GroupSet[]>('/group-sets/') });
   const contactLists = useQuery({ queryKey: ['contact-lists'], queryFn: () => api<ContactList[]>('/contact-lists/') });
 
-  // Defaults for timing come from Settings.
+  const connected = useMemo(() => (accounts.data?.results ?? []).filter(a => a.status === 'connected'), [accounts.data]);
+
+  // Defaults for timing and rotation come from Settings.
   useEffect(() => {
-    if (settings.data && !timing) {
-      const { delay_min_seconds, delay_max_seconds, batch_size, batch_pause_minutes, typing_indicator } = settings.data;
-      setTiming({ delay_min_seconds, delay_max_seconds, batch_size, batch_pause_minutes, typing_indicator });
-    }
+    if (settings.data && !timing) setTiming(pickTiming(settings.data));
   }, [settings.data, timing]);
+
+  // By default every connected account shares the work.
+  useEffect(() => {
+    if (senders === null && accounts.data) setSenders(connected.map(a => a.id));
+  }, [senders, accounts.data, connected]);
 
   // "Reuse" from a past campaign.
   useEffect(() => {
@@ -59,18 +70,16 @@ export default function Compose() {
     api<CampaignDetail>(`/campaigns/${fromId}/`).then(c => {
       setMessage(c.message);
       setMedia(c.media);
-      setSelected(new Set(c.targets.filter(t => t.kind === 'group' && t.account_id).map(t => key(t.account_id!, t.recipient_jid))));
-      const people = c.targets.filter(t => t.kind === 'contact' && t.contact_id);
+      // Recipients whose contact was deleted since come back as pasted numbers.
+      const saved = c.targets.filter(t => t.contact_id);
+      const gone = c.targets.filter(t => !t.contact_id);
       setPick({
         ...emptyPick(),
-        senders: [...new Set(people.map(t => t.account_id).filter((x): x is number => x !== null))],
-        contacts: people.map(t => ({ id: t.contact_id!, name: t.recipient_name, phone: t.recipient_jid.split('@')[0] })),
+        contacts: saved.map(t => ({ id: t.contact_id!, name: t.recipient_name, phone: t.phone })),
+        numbers: gone.map(t => '+' + t.phone).join('\n'),
       });
-      if (people.length && !c.targets.some(t => t.kind === 'group')) setTab('contacts');
-      setTiming({
-        delay_min_seconds: c.delay_min_seconds, delay_max_seconds: c.delay_max_seconds, batch_size: c.batch_size,
-        batch_pause_minutes: c.batch_pause_minutes, typing_indicator: c.typing_indicator,
-      });
+      setSenders(c.sender_account_ids);
+      setTiming(pickTiming(c));
       toast('Message and recipients loaded. Check them, then send.');
     }).catch(e => toast(e.message, 'bad'));
   }, [fromId, toast]);
@@ -79,9 +88,8 @@ export default function Compose() {
     try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ message, media })); } catch { /* private mode */ }
   }, [message, media]);
 
-  // Only keep selections that still exist.
-  const valid = useMemo(() => new Set((groups.data ?? []).flatMap(a => a.groups.map(g => key(a.account_id, g.jid)))), [groups.data]);
-  const chosen = useMemo(() => [...selected].filter(k => valid.has(k)), [selected, valid]);
+  // Only accounts that are connected right now can send.
+  const chosenSenders = useMemo(() => (senders ?? []).filter(id => connected.some(a => a.id === id)), [senders, connected]);
 
   // ---------- message ----------
   function wrapSelection(w: string) {
@@ -113,90 +121,63 @@ export default function Compose() {
     }
   }
 
+  const attachLink = useMutation({
+    mutationFn: (url: string) => api<Media>('/media/from-url/', { method: 'POST', body: { url } }),
+    onSuccess: m => { setMedia(m); setLinkUrl(''); toast(`Attached ${m.original_name}`); },
+    onError: (e: Error) => toast(e.message, 'bad'),
+  });
+
   const saveTemplate = useMutation({
     mutationFn: (title: string) => api<Template>('/templates/', { method: 'POST', body: { title, body: message } }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['templates'] }); toast('Template saved'); },
     onError: (e: Error) => toast(e.message, 'bad'),
   });
 
-  // ---------- groups ----------
-  function toggle(k: string, on: boolean) {
-    setSelected(s => { const n = new Set(s); on ? n.add(k) : n.delete(k); return n; });
-  }
-  function selectAll(a: AccountGroups, on: boolean) {
-    setSelected(s => {
-      const n = new Set(s);
-      a.groups.forEach(g => (on ? g.can_post && n.add(key(a.account_id, g.jid)) : n.delete(key(a.account_id, g.jid))));
-      return n;
-    });
-  }
-  const syncGroups = useMutation({
-    mutationFn: (accountId: number) => api(`/accounts/${accountId}/sync-groups/`, { method: 'POST' }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['groups'] }); toast('Groups refreshed'); },
-    onError: (e: Error) => toast(e.message, 'bad'),
-  });
-
-  function applySet(s: GroupSet) {
-    const keys = s.targets.map(t => key(t.account_id, t.group_jid));
-    const ok = keys.filter(k => valid.has(k));
-    setSelected(new Set(ok));
-    const missing = keys.length - ok.length;
-    toast(`Selected "${s.name}"` + (missing ? ` (${plural(missing, 'group')} not available right now)` : ''));
-  }
-  const saveSet = useMutation({
-    mutationFn: (name: string) => api<GroupSet>('/group-sets/', { method: 'POST', body: { name, targets: toRefs(chosen) } }),
-    onSuccess: s => { qc.invalidateQueries({ queryKey: ['group-sets'] }); toast(`Saved "${s.name}"`); },
-    onError: (e: Error) => toast(e.message, 'bad'),
-  });
-  const deleteSet = useMutation({
-    mutationFn: (id: number) => api(`/group-sets/${id}/`, { method: 'DELETE' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['group-sets'] }),
-  });
+  // ---------- senders ----------
+  const toggleSender = (id: number, on: boolean) =>
+    setSenders(cur => (on ? [...(cur ?? []).filter(x => x !== id), id] : (cur ?? []).filter(x => x !== id)));
 
   // ---------- timing / schedule ----------
   const t = timing;
-  const contactCount = pickCount(pick, contactLists.data);
-  const hasContacts = contactCount > 0;
-  const n = chosen.length + contactCount;
+  const n = pickCount(pick, contactLists.data);
+  const upTo = pastedCount(pick.numbers) > 0 || pick.listIds.length > 0 ? 'up to ' : '';
   let estimate = '';
   if (t && n > 1) {
     const lo = Math.min(t.delay_min_seconds, t.delay_max_seconds), hi = Math.max(t.delay_min_seconds, t.delay_max_seconds);
     const breaks = t.batch_size > 0 ? Math.floor((n - 1) / t.batch_size) : 0;
     const secs = (n - 1 - breaks) * (lo + hi) / 2 + breaks * t.batch_pause_minutes * 60 + n * (t.typing_indicator ? 3 : 1);
-    estimate = `About ${duration(secs)} for ${hasContacts ? 'up to ' : ''}${plural(n, 'message')}${breaks ? `, including ${plural(breaks, 'break')}` : ''}.`;
+    estimate = `About ${duration(secs)} for ${upTo}${plural(n, 'message')}${breaks ? `, including ${plural(breaks, 'break')}` : ''}.`;
   }
   const scheduleAt = later && when ? new Date(when) : null;
   const badTime = later && (!scheduleAt || Number.isNaN(scheduleAt.getTime()) || scheduleAt.getTime() < Date.now() - 60000);
   const hasContent = !!message.trim() || !!media;
-  const needSender = hasContacts && !pick.senders.length;
+  const needSender = !chosenSenders.length;
   const ready = n > 0 && hasContent && !badTime && !needSender && !!t && uploadPct === null;
 
   const send = useMutation({
     mutationFn: () => api<CampaignDetail>('/campaigns/', {
       method: 'POST',
       body: {
-        message, media_id: media?.id ?? null, targets: toRefs(chosen), scheduled_at: scheduleAt?.toISOString() ?? null, ...t,
-        ...(hasContacts ? {
-          contact_ids: pick.contacts.map(c => c.id), contact_list_ids: pick.listIds, numbers: pick.numbers, sender_account_ids: pick.senders,
-        } : {}),
+        message, media_id: media?.id ?? null, scheduled_at: scheduleAt?.toISOString() ?? null, ...t,
+        contact_ids: pick.contacts.map(c => c.id), contact_list_ids: pick.listIds, numbers: pick.numbers,
+        sender_account_ids: chosenSenders,
       },
     }),
     onSuccess: c => {
       qc.invalidateQueries({ queryKey: ['campaigns'] });
       qc.invalidateQueries({ queryKey: ['dashboard'] });
       toast(scheduleAt ? `Scheduled for ${dateTime(c.scheduled_at)}` : 'Sending started');
-      setMessage(''); setMedia(null); setSelected(new Set()); setPick(emptyPick()); setConfirming(false);
+      setMessage(''); setMedia(null); setPick(emptyPick()); setConfirming(false);
       nav(`/campaigns/${c.id}`);
     },
     onError: (e: Error) => { toast(e.message, 'bad'); setConfirming(false); },
   });
 
-  const q = search.trim().toLowerCase();
   const num = (v: string, fallback: number) => (v === '' || Number.isNaN(Number(v)) ? fallback : Number(v));
 
   return (
     <>
-      <PageHeader title="New broadcast" sub="Write once, then send to groups and contacts, one at a time." />
+      <PageHeader title="New broadcast" sub="Write once, then send it to each of your contacts, one at a time." />
       <div className="grid-2">
         {/* ---------------- message ---------------- */}
         <section className="panel">
@@ -237,6 +218,13 @@ export default function Compose() {
               </span>
             )}
           </div>
+          {!media && uploadPct === null && (
+            <form className="row" onSubmit={e => { e.preventDefault(); if (linkUrl.trim()) attachLink.mutate(linkUrl.trim()); }}>
+              <input type="url" placeholder="…or paste a link to a file, e.g. https://example.com/banner.jpg" value={linkUrl}
+                onChange={e => setLinkUrl(e.target.value)} style={{ flex: 1, minWidth: 200 }} aria-label="Attach a file by link" />
+              <button type="submit" disabled={!linkUrl.trim() || attachLink.isPending}>{attachLink.isPending ? 'Downloading…' : 'Attach link'}</button>
+            </form>
+          )}
 
           <div>
             <span className="lbl">Preview</span>
@@ -251,91 +239,64 @@ export default function Compose() {
             </div>
           </div>
 
-          {/\{name/i.test(message) && <p className="small" style={{ margin: 0 }}>Contacts see their own name; the preview uses "Rahim". In groups, the fallback after | is used.</p>}
+          {/\{name/i.test(message) && <p className="small" style={{ margin: 0 }}>Each contact sees their own name; the preview uses "Rahim". Contacts without a name get the word after |.</p>}
 
           <NameAndSave placeholder="Name this message to save it as a template" button="Save as template"
             disabled={!message.trim()} onSave={name => saveTemplate.mutate(name)} />
         </section>
 
-        {/* ---------------- groups ---------------- */}
+        {/* ---------------- recipients ---------------- */}
         <section className="panel">
           <div className="row spread">
             <h2>Recipients</h2>
-            <span className="meta">{chosen.length} groups · {hasContacts ? `up to ${contactCount}` : 0} contacts</span>
-          </div>
-          <div className="segmented" role="tablist" aria-label="Recipient type">
-            <button type="button" role="tab" aria-selected={tab === 'groups'} onClick={() => setTab('groups')}>Groups{chosen.length ? ` (${chosen.length})` : ''}</button>
-            <button type="button" role="tab" aria-selected={tab === 'contacts'} onClick={() => setTab('contacts')}>Contacts{hasContacts ? ` (${contactCount})` : ''}</button>
+            <span className="meta">{n ? `${upTo}${plural(n, 'contact')}` : 'None yet'}</span>
           </div>
 
-          {tab === 'contacts' && <ContactPicker value={pick} onChange={setPick} accounts={groups.data ?? []} />}
+          <ContactPicker value={pick} onChange={setPick} />
 
-          {tab === 'groups' && (<>
-
-          {!!sets.data?.length && (
-            <div className="chips" aria-label="Saved group sets">
-              {sets.data.map(s => (
-                <span className="chip" key={s.id}>
-                  <button type="button" onClick={() => applySet(s)} title="Select these groups">{s.name} · {s.targets.length}</button>
-                  <ConfirmButton className="x" confirm="Delete?" onConfirm={() => deleteSet.mutateAsync(s.id)}>✕</ConfirmButton>
-                </span>
-              ))}
-            </div>
-          )}
-
-          <input type="search" placeholder="Search groups" value={search} onChange={e => setSearch(e.target.value)} />
-
-          {groups.isLoading ? <span className="small">Loading groups…</span> : !groups.data?.length ? (
-            <Empty>No connected accounts yet.<br /><Link className="btn primary" to="/accounts" style={{ marginTop: 10 }}>Link a WhatsApp account</Link></Empty>
-          ) : (
-            <div className="stack">
-              {groups.data.map(a => {
-                const shown = a.groups.filter(g => !q || g.name.toLowerCase().includes(q));
-                const picked = a.groups.filter(g => selected.has(key(a.account_id, g.jid))).length;
-                return (
-                  <div className="acct" key={a.account_id}>
-                    <header>
-                      <span><span className="name">{a.label}</span> <span className="meta">+{a.phone} · {picked}/{a.groups.length}</span></span>
-                      <span className="row">
-                        <button type="button" className="ghost" onClick={() => selectAll(a, true)}>Select all</button>
-                        <button type="button" className="ghost" onClick={() => selectAll(a, false)}>Clear</button>
-                        <button type="button" className="ghost" disabled={syncGroups.isPending} title={`Last refreshed ${relative(a.groups_synced_at)}`}
-                          onClick={() => syncGroups.mutate(a.account_id)}>Refresh</button>
-                      </span>
-                    </header>
-                    <ul className="list">
-                      {shown.length ? shown.map(g => {
-                        const k = key(a.account_id, g.jid);
-                        const id = `g-${a.account_id}-${g.id}`;
-                        return (
-                          <li key={g.id}>
-                            <input type="checkbox" id={id} checked={selected.has(k)} onChange={e => toggle(k, e.target.checked)} />
-                            <label className="grow" htmlFor={id}>
-                              <span className="name">{g.name}</span>
-                              <span className="small">{g.size} members</span>
-                            </label>
-                            {g.admins_only && (g.can_post
-                              ? <Pill tone="warn">Admins only</Pill>
-                              : <Pill tone="bad" title="Only admins can post here, and this account is not an admin">Can't post</Pill>)}
-                          </li>
-                        );
-                      }) : <li className="small">{a.groups.length ? 'No groups match your search.' : 'This account is not in any groups yet.'}</li>}
-                    </ul>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          <NameAndSave placeholder="Name the selected groups, e.g. Staff" button="Save as group set"
-            disabled={!chosen.length} onSave={name => saveSet.mutate(name)} />
-          </>)}
+          <fieldset className="opts">
+            <legend>Send from</legend>
+            {accounts.isLoading ? <span className="small">Loading accounts…</span> : !connected.length ? (
+              <Empty>No connected WhatsApp accounts.<br /><Link className="btn primary" to="/accounts" style={{ marginTop: 10 }}>Go to Accounts</Link></Empty>
+            ) : (<>
+              <div className="row">
+                {connected.map(a => (
+                  <label key={a.id} className="row chip-check">
+                    <input type="checkbox" checked={chosenSenders.includes(a.id)} onChange={e => toggleSender(a.id, e.target.checked)} />
+                    {a.label} <span className="meta">+{a.phone}{a.effective_daily_limit ? ` · ${a.sent_today}/${a.effective_daily_limit} today` : ''}</span>
+                  </label>
+                ))}
+              </div>
+              {t && chosenSenders.length > 1 && (
+                <div className="optgrid">
+                  <label htmlFor="rot">Share the work</label>
+                  <span className="row">
+                    <select id="rot" value={t.rotation_mode} onChange={e => setTiming({ ...t, rotation_mode: e.target.value as Rotation })}>
+                      {ROTATIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+                    </select>
+                    {t.rotation_mode === 'turns' && (<>
+                      <input type="number" min={1} max={100} aria-label="Messages per turn" value={t.rotate_every}
+                        onChange={e => setTiming({ ...t, rotate_every: Math.max(1, num(e.target.value, 1)) })} />
+                      per turn
+                    </>)}
+                  </span>
+                  <label htmlFor="failover">Failover</label>
+                  <label className="row"><input id="failover" type="checkbox" checked={t.failover}
+                    onChange={e => setTiming({ ...t, failover: e.target.checked })} /> If an account disconnects or hits its daily limit, another one takes over</label>
+                </div>
+              )}
+              <p className="small" style={{ margin: 0 }}>
+                {t && chosenSenders.length > 1 ? ROTATIONS.find(r => r[0] === t.rotation_mode)?.[2] + ' ' : ''}
+                More accounts means fewer messages from each one, which lowers the ban risk.
+              </p>
+            </>)}
+          </fieldset>
 
           {t && (
             <fieldset className="opts">
               <legend>Timing</legend>
               <div className="optgrid">
-                <label htmlFor="dMin">Wait between groups</label>
+                <label htmlFor="dMin">Wait between messages</label>
                 <span className="row nowrap">
                   <input id="dMin" type="number" min={3} max={600} value={t.delay_min_seconds}
                     onChange={e => setTiming({ ...t, delay_min_seconds: num(e.target.value, 3) })} />
@@ -347,7 +308,7 @@ export default function Compose() {
                 <span className="row nowrap">
                   <input id="bSize" type="number" min={0} max={500} value={t.batch_size}
                     onChange={e => setTiming({ ...t, batch_size: num(e.target.value, 0) })} />
-                  groups, for
+                  messages, for
                   <input type="number" min={1} max={240} aria-label="Break length in minutes" value={t.batch_pause_minutes}
                     onChange={e => setTiming({ ...t, batch_pause_minutes: num(e.target.value, 1) })} /> min
                 </span>
@@ -376,8 +337,8 @@ export default function Compose() {
             {confirming && ready ? (
               <span className="confirm">
                 {scheduleAt ? 'Schedule' : 'Send'} to{' '}
-                <b>{[chosen.length && plural(chosen.length, 'group'), hasContacts && `${pastedCount(pick.numbers) || pick.listIds.length ? 'up to ' : ''}${plural(contactCount, 'contact')}`].filter(Boolean).join(' and ')}</b>
-                {' '}from {plural(new Set([...chosen.map(k => k.split('|')[0]), ...(hasContacts ? pick.senders.map(String) : [])]).size, 'account')}
+                <b>{upTo}{plural(n, 'contact')}</b>
+                {' '}from {plural(chosenSenders.length, 'account')}
                 {scheduleAt ? ` on ${dateTime(scheduleAt.toISOString())}` : ''}?
                 <button type="button" className="primary" disabled={send.isPending} onClick={() => send.mutate()}>
                   {send.isPending ? 'Working…' : scheduleAt ? 'Yes, schedule' : 'Yes, send'}
@@ -386,8 +347,8 @@ export default function Compose() {
               </span>
             ) : (
               <button type="button" className="primary" disabled={!ready} onClick={() => setConfirming(true)}>
-                {!n ? 'Pick groups or contacts' : !hasContent ? 'Write a message first' : badTime ? 'Pick a future time'
-                  : needSender ? 'Pick an account to send from' : `${scheduleAt ? 'Schedule for' : 'Send to'} ${hasContacts ? 'up to ' : ''}${plural(n, 'recipient')}`}
+                {!n ? 'Pick contacts to send to' : !hasContent ? 'Write a message first' : badTime ? 'Pick a future time'
+                  : needSender ? 'Pick an account to send from' : `${scheduleAt ? 'Schedule for' : 'Send to'} ${upTo}${plural(n, 'contact')}`}
               </button>
             )}
           </div>

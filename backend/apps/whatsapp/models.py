@@ -1,5 +1,6 @@
 import secrets
 
+from django.conf import settings
 from django.core.validators import MaxValueValidator
 from django.db import models
 
@@ -18,6 +19,7 @@ class WhatsAppAccount(models.Model):
         LOGGED_OUT = "logged_out", "Logged out from phone"
         ERROR = "error", "Error"
 
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
     label = models.CharField(max_length=60)
     session_id = models.CharField(max_length=64, unique=True, default=new_session_id, editable=False)
     provider = models.CharField(max_length=20, editable=False)

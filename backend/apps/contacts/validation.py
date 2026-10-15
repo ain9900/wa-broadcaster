@@ -27,51 +27,58 @@ def is_fresh(contact) -> bool:
     return bool(contact.checked_at and contact.on_whatsapp is not None and timezone.now() - contact.checked_at < FRESH_FOR)
 
 
-def record_results(results: dict[str, str | None]) -> None:
-    """Store {phone: chat id or None} answers from WhatsApp."""
+def record_results(results: dict[str, str | None], owner) -> None:
+    """Store {phone: chat id or None} answers from WhatsApp on one workspace's contacts (owner: user or id)."""
     now = timezone.now()
     for phone, jid in results.items():
-        Contact.objects.filter(phone=phone).update(on_whatsapp=bool(jid), wa_jid=jid or "", checked_at=now)
+        Contact.objects.filter(owner=owner, phone=phone).update(on_whatsapp=bool(jid), wa_jid=jid or "", checked_at=now)
 
 
-def checker_account():
-    """A connected account to run lookups with (the one that has sent least today)."""
+def checker_account(owner):
+    """One of this workspace's connected accounts to run lookups with (the one that has sent least today)."""
     from apps.broadcasts.limits import sent_today_by_account
 
-    accounts = list(WhatsAppAccount.objects.filter(status=WhatsAppAccount.Status.CONNECTED))
+    accounts = list(WhatsAppAccount.objects.filter(owner=owner, status=WhatsAppAccount.Status.CONNECTED))
     if not accounts:
         return None
     sent = sent_today_by_account()
     return min(accounts, key=lambda a: (sent.get(a.id, 0), a.id))
 
 
-def pending():
-    return Contact.objects.filter(checked_at__isnull=True, opted_out=False)
+def pending(owner=None):
+    qs = Contact.objects.filter(checked_at__isnull=True, opted_out=False)
+    return qs if owner is None else qs.filter(owner=owner)
 
 
 def validate_pending(max_batches: int = 10, pause: float = PAUSE_BETWEEN_BATCHES) -> int:
-    """Check up to max_batches × 50 unchecked numbers. Returns how many were checked.
+    """Check up to max_batches × 50 unchecked numbers per workspace, each workspace through its own
+    connected accounts. Returns how many were checked.
     Safe to call often: a lock makes sure only one checker runs at a time."""
     if not cache.add("contacts:validate-lock", 1, timeout=600):
         return 0
     checked = 0
     try:
         provider = get_provider()
-        for i in range(max_batches):
-            account = checker_account()
-            if account is None:
-                break
-            phones = list(pending().order_by("id").values_list("phone", flat=True)[: provider.CHECK_BATCH])
-            if not phones:
-                break
-            if i:
-                time.sleep(pause)
-            try:
-                record_results(provider.check_numbers(account.session_id, phones))
-            except ProviderError as e:
-                log.warning("number check failed: %s", e)
-                break
-            checked += len(phones)
+        owners = (WhatsAppAccount.objects.filter(status=WhatsAppAccount.Status.CONNECTED)
+                  .filter(owner_id__in=pending().values("owner_id")).values_list("owner_id", flat=True).distinct())
+        batches = 0
+        for owner in list(owners):
+            for _ in range(max_batches):
+                account = checker_account(owner)
+                if account is None:
+                    break
+                phones = list(pending(owner).order_by("id").values_list("phone", flat=True)[: provider.CHECK_BATCH])
+                if not phones:
+                    break
+                if batches:
+                    time.sleep(pause)
+                batches += 1
+                try:
+                    record_results(provider.check_numbers(account.session_id, phones), owner=owner)
+                except ProviderError as e:
+                    log.warning("number check failed: %s", e)
+                    break
+                checked += len(phones)
     finally:
         cache.delete("contacts:validate-lock")
     return checked

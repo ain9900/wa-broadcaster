@@ -8,6 +8,7 @@ from rest_framework.response import Response
 
 from apps.broadcasts.limits import sent_today_by_account
 from apps.core.models import AppSettings
+from apps.core.workspace import WorkspaceMixin
 
 from . import services
 from .models import WhatsAppAccount
@@ -19,18 +20,20 @@ def provider_error(e):
     return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
 
 
-class AccountViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.CreateModelMixin,
+class AccountViewSet(WorkspaceMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.CreateModelMixin,
                      mixins.UpdateModelMixin, mixins.DestroyModelMixin, viewsets.GenericViewSet):
     serializer_class = AccountSerializer
     pagination_class = None
-    queryset = WhatsAppAccount.objects.all()
+
+    def get_queryset(self):
+        return WhatsAppAccount.objects.filter(owner=self.workspace)
 
     def context_for(self, live=None):
         return {
             "request": self.request,
             "live": live or {},
             "sent_today": sent_today_by_account(),
-            "workspace_limit": AppSettings.load().daily_limit,
+            "workspace_limit": AppSettings.load(self.workspace).daily_limit,
         }
 
     def list(self, request):
@@ -46,7 +49,7 @@ class AccountViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Cr
     def create(self, request):
         s = AccountSerializer(data=request.data)
         s.is_valid(raise_exception=True)
-        account = s.save(provider=settings.WA_PROVIDER, status=WhatsAppAccount.Status.STARTING)
+        account = s.save(owner=self.workspace, provider=settings.WA_PROVIDER, status=WhatsAppAccount.Status.STARTING)
         try:
             state = get_provider().start_session(account.session_id)
         except ProviderError as e:

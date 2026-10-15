@@ -15,6 +15,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from apps.core.csvutil import csv_response
+from apps.core.workspace import WorkspaceMixin
 
 from .fetch import FetchError, fetch
 from .models import Campaign, CampaignTarget, MediaFile, MessageTemplate
@@ -27,19 +28,23 @@ from .serializers import (
 S, T = Campaign.Status, CampaignTarget.Status
 
 
-class TemplateViewSet(viewsets.ModelViewSet):
+class TemplateViewSet(WorkspaceMixin, viewsets.ModelViewSet):
     serializer_class = TemplateSerializer
-    queryset = MessageTemplate.objects.all()
     pagination_class = None
 
+    def get_queryset(self):
+        return MessageTemplate.objects.filter(owner=self.workspace)
+
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        serializer.save(owner=self.workspace, created_by=self.request.user)
 
 
-class MediaViewSet(mixins.CreateModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+class MediaViewSet(WorkspaceMixin, mixins.CreateModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     serializer_class = MediaFileSerializer
-    queryset = MediaFile.objects.all()
     parser_classes = [MultiPartParser]
+
+    def get_queryset(self):
+        return MediaFile.objects.filter(owner=self.workspace)
 
     def create(self, request):
         f = request.FILES.get("file")
@@ -53,7 +58,8 @@ class MediaViewSet(mixins.CreateModelMixin, mixins.RetrieveModelMixin, viewsets.
         mime = (f.content_type or "").split(";")[0].strip().lower()
         if not mime or mime == "application/octet-stream":
             mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
-        m = MediaFile.objects.create(file=f, original_name=name, mime_type=mime[:120], size=f.size, uploaded_by=request.user)
+        m = MediaFile.objects.create(owner=self.workspace, file=f, original_name=name, mime_type=mime[:120], size=f.size,
+                                     uploaded_by=request.user)
         return Response(MediaFileSerializer(m, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=["post"], url_path="from-url", parser_classes=[JSONParser])
@@ -66,7 +72,7 @@ class MediaViewSet(mixins.CreateModelMixin, mixins.RetrieveModelMixin, viewsets.
             got = fetch(url)
         except FetchError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        m = MediaFile(original_name=got.filename, mime_type=got.mime_type[:120], size=len(got.data),
+        m = MediaFile(owner=self.workspace, original_name=got.filename, mime_type=got.mime_type[:120], size=len(got.data),
                       uploaded_by=request.user, source_url=got.url[:1000])
         m.file.save(got.filename, ContentFile(got.data), save=False)
         m.save()
@@ -133,10 +139,12 @@ def with_counts(qs):
     )
 
 
-class CampaignViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.CreateModelMixin,
+class CampaignViewSet(WorkspaceMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.CreateModelMixin,
                       mixins.DestroyModelMixin, viewsets.GenericViewSet):
     def get_queryset(self):
-        qs = with_counts(Campaign.objects.select_related("media", "created_by").prefetch_related("sender_accounts"))
+        qs = with_counts(Campaign.objects.filter(owner=self.workspace)
+                         .select_related("media", "created_by").prefetch_related("sender_accounts")
+                         .order_by("-created_at", "-id"))  # Meta.ordering is dropped on grouped (count) queries
         st = self.request.query_params.get("status")
         if st == "active":
             qs = qs.filter(status__in=Campaign.ACTIVE)
@@ -214,7 +222,7 @@ class CampaignViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.C
             fields = ["message", "media", "delay_min_seconds", "delay_max_seconds", "batch_size", "batch_pause_minutes",
                       "typing_indicator", "rotation_mode", "rotate_every", "failover"]
             c = Campaign.objects.create(
-                name=f"Retry: {src.name}"[:120], created_by=request.user, scheduled_at=timezone.now(),
+                name=f"Retry: {src.name}"[:120], owner=src.owner, created_by=request.user, scheduled_at=timezone.now(),
                 **{f: getattr(src, f) for f in fields},
             )
             c.sender_accounts.set(src.sender_accounts.all())

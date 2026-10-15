@@ -19,7 +19,7 @@ def test_api_requires_login(db):
 
 def test_login_and_session(user):
     c = APIClient(enforce_csrf_checks=False)
-    assert c.get("/api/auth/session/").json() == {"user": None}
+    assert c.get("/api/auth/session/").json() == {"user": None, "signup_enabled": False}
     bad = c.post("/api/auth/login/", {"username": "admin", "password": "nope"}, format="json")
     assert bad.status_code == 401
     ok = c.post("/api/auth/login/", {"username": "admin", "password": "a-long-test-password"}, format="json")

@@ -13,8 +13,8 @@ class TargetInline(admin.TabularInline):
 
 @admin.register(Campaign)
 class CampaignAdmin(admin.ModelAdmin):
-    list_display = ["id", "__str__", "status", "scheduled_at", "started_at", "finished_at", "created_by"]
-    list_filter = ["status"]
+    list_display = ["id", "__str__", "owner", "status", "scheduled_at", "started_at", "finished_at", "created_by"]
+    list_filter = ["status", "owner"]
     search_fields = ["name", "message"]
     readonly_fields = ["started_at", "finished_at", "next_action_at", "heartbeat_at", "note"]
     inlines = [TargetInline]
@@ -22,10 +22,10 @@ class CampaignAdmin(admin.ModelAdmin):
 
 @admin.register(MessageTemplate)
 class TemplateAdmin(admin.ModelAdmin):
-    list_display = ["title", "updated_at"]
+    list_display = ["title", "owner", "updated_at"]
     search_fields = ["title", "body"]
 
 
 @admin.register(MediaFile)
 class MediaFileAdmin(admin.ModelAdmin):
-    list_display = ["original_name", "mime_type", "size", "created_at"]
+    list_display = ["original_name", "owner", "mime_type", "size", "created_at"]

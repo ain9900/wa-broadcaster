@@ -14,7 +14,8 @@ if (!existsSync(envFile)) {
     .replace(/^POSTGRES_PASSWORD=.*$/m, `POSTGRES_PASSWORD=${secret()}`)
     .replace(/^GATEWAY_API_KEY=.*$/m, `GATEWAY_API_KEY=${secret()}`)
     .replace(/^EVOLUTION_API_KEY=.*$/m, `EVOLUTION_API_KEY=${secret()}`)
-    .replace(/^ADMIN_PASSWORD=.*$/m, `ADMIN_PASSWORD=${adminPw}`);
+    .replace(/^ADMIN_PASSWORD=.*$/m, `ADMIN_PASSWORD=${adminPw}`)
+    .replace(/^DJANGO_DEBUG=.*$/m, 'DJANGO_DEBUG=true'); // this script sets up local development, not Docker
   writeFileSync(envFile, env);
   console.log(`\nCreated .env with random secrets.\n  Dashboard login: admin / ${adminPw}\n  (also saved as ADMIN_PASSWORD in .env)\n`);
 } else {

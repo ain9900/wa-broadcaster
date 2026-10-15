@@ -1,29 +1,33 @@
 # WA Broadcaster
 
-Link WhatsApp accounts by scanning a QR code, then send one message to many **groups** and/or **individual contacts** across those accounts, safely paced, scheduled and tracked.
+Link WhatsApp accounts by scanning a QR code, then send one message to many **contacts** (individual recipients), shared out across those accounts, safely paced, scheduled and tracked.
 
-> **Important:** this uses an unofficial WhatsApp Web connection (Baileys, or Evolution API, which is built on it). That is against WhatsApp's terms, and numbers can be banned, especially for fast or bulk sending. Post only to groups you really belong to, keep waits between groups at 8 seconds or more, and test with a number you can afford to lose.
+> **Important:** this uses an unofficial WhatsApp Web connection (Baileys, or Evolution API, which is built on it). That is against WhatsApp's terms, and numbers can be banned, especially for fast or bulk sending. Only message people who expect it, keep waits between messages at 8 seconds or more, and test with a number you can afford to lose.
 
 ## Features
 
 - **Accounts:** link any number of WhatsApp accounts by QR code. Logins are kept and reconnect by themselves. Per-account daily limits.
 - **Contacts:** save numbers with names, organise them into lists, import from a pasted list or CSV (Excel / Google Sheets), and export to CSV. Local numbers like `017…` get your default country code. Opted-out contacts are never messaged.
-- **Send to individuals:** pick contact lists, single contacts or paste numbers. Choose which accounts send them; the work is shared out between those accounts in turn. Each number is checked for WhatsApp before sending. `{name}` (or `{name|friend}` with a fallback) puts each person's name in the message.
-- **Composer:** WhatsApp formatting (bold, italic, strike, mono) with a live chat-bubble preview, attachments up to 25 MB (photo, video, GIF, audio, document), templates and saved group sets.
-- **Safe sending:** one group at a time, a random wait in your range, optional breaks after every N groups, "typing…" before each message, and daily limits per account.
+- **WhatsApp check:** imported numbers are checked for WhatsApp in the background through a connected account. Numbers that aren't on WhatsApp are left out of broadcasts, and you can filter by the result or re-check numbers.
+- **Recipients:** pick contact lists, single contacts or paste numbers. Each number is checked for WhatsApp before sending. `{name}` (or `{name|friend}` with a fallback) puts each person's name in the message.
+- **Composer:** WhatsApp formatting (bold, italic, strike, mono) with a live chat-bubble preview, attachments up to 25 MB (photo, video, GIF, audio, document), attach by link, and templates.
+- **Sender rotation:** choose which accounts send. They can take turns (N messages each), be picked at random, or go by fewest sent today. With failover, an account that disconnects or reaches its daily limit is passed over.
+- **Safe sending:** one message at a time, a random wait in your range, optional breaks after every N messages, "typing…" before each message, and daily limits per account.
 - **Scheduling and queue:** send now or at a set time. Sends queue and run one after another.
 - **Live campaign status:** open a campaign to see who is being sent to right now, who's next, a countdown, sent/failed/skipped/waiting counts, and time left.
 - **Control:** pause, resume, cancel, and "retry failed" for any campaign. A crash or restart resumes where it stopped, without double-sending.
 - **Dashboard:** live progress, today's numbers, and the last 7 days.
-- **Reports:** pick a date range to see totals, delivery rate, messages per day, results by account, by campaign, and by groups vs contacts, plus the most common failure reasons. Download as CSV, or download one campaign's full recipient report.
-- **Multi-user:** Django users, with the admin panel at `/admin/`.
+- **Reports:** pick a date range to see totals, delivery rate, messages per day, results by account and by campaign, plus the most common failure reasons. Download as CSV, or download one campaign's full recipient report.
+- **Separate workspaces:** every user has their own WhatsApp accounts, contacts, lists, campaigns, templates, settings and reports. Nobody sees another user's data. Each workspace sends one campaign at a time; different workspaces send side by side.
+- **Team members:** in **Settings → Team**, a user adds employees or support assistants with their own sign-in. They work in that user's workspace and can do all the work, except add people or change passwords (the owner resets theirs).
+- **Sign-up:** with `ALLOW_SIGNUP=true` in `.env`, the sign-in page shows **Create an account**. Leave it `false` on a public server unless strangers may sign up; you can always add users in the admin panel at `/admin/`.
 
 ## Architecture
 
 ```
  Browser ──► React UI (Vite / Nginx) ──/api──► Django REST API ──► PostgreSQL
                                                    │    ▲
-                                    Celery beat ──►│    │ webhooks (connection / group changes)
+                                    Celery beat ──►│    │ webhooks (connection changes)
                                     Celery worker ─┤    │
                                      (Redis broker)│    │
                                                    ▼    │
@@ -34,14 +38,14 @@ Link WhatsApp accounts by scanning a QR code, then send one message to many **gr
 
 | Folder | What it is |
 |---|---|
-| `backend/` | Django 5 + Django REST Framework. Apps: `core` (auth, settings, dashboard), `whatsapp` (accounts, groups, providers), `contacts` (numbers, lists, import/export), `broadcasts` (campaigns, sending engine, reports, templates, sets, media). |
+| `backend/` | Django 5 + Django REST Framework. Apps: `core` (auth, sign-up, team members, per-user settings, dashboard), `whatsapp` (accounts, providers), `contacts` (numbers, lists, import/export), `broadcasts` (campaigns, sending engine, sender rotation, reports, templates, media). |
 | `gateway/` | Small Node service that holds the WhatsApp (Baileys) connections. Internal only, protected by `GATEWAY_API_KEY`. |
 | `frontend/` | React + TypeScript + Vite single-page app. |
 | `docker-compose.yml` | The full stack: Postgres, Redis, Django (gunicorn), Celery worker and beat, gateway, Nginx serving the UI, and optionally Evolution API. |
 | `scripts/` | `setup` and `dev` helpers for running without Docker. |
 | `deploy/` | Host Nginx config for HTTPS on a VPS. |
 
-**How sending works:** Celery beat checks every 5 seconds for a due campaign and hands it to a worker. The worker sends to one group, saves the result in the database, waits, and moves to the next group. All progress lives in Postgres, so pausing, cancelling, a restart or a crash never loses track. A group that was mid-send during a crash is marked "may or may not have arrived" rather than sent twice.
+**How sending works:** Celery beat checks every 5 seconds for a due campaign and hands it to a worker. The worker picks the sending account (following the rotation), sends to one contact, saves the result in the database, waits, and moves to the next contact. All progress lives in Postgres, so pausing, cancelling, a restart or a crash never loses track. A message that was mid-send during a crash is marked "may or may not have arrived" rather than sent twice.
 
 ---
 
@@ -89,13 +93,13 @@ Tests: `npm test` runs the backend test suite.
 
 1. **Accounts** → type a name → **Link a new account**.
 2. On the phone: WhatsApp → **Settings** → **Linked devices** → **Link a device**, then scan the QR code.
-3. After a few seconds it shows **Connected** and loads the groups.
-4. **New broadcast** → write the message → pick **Groups** and/or **Contacts** → check the timing → **Send**.
+3. After a few seconds it shows **Connected**.
+4. **New broadcast** → write the message → pick contacts or lists (or paste numbers) → choose the accounts to send from → check the timing → **Send**.
 5. Click the campaign to watch its live status.
 
 To message individuals, first add numbers on the **Contacts** page (or paste them straight into the composer).
 
-> Messaging people who haven't saved your number carries a much higher ban risk than posting in groups. Only message people who expect it, honour opt-outs, keep waits long, and start with small lists.
+> Messaging people who haven't saved your number carries a high ban risk. Only message people who expect it, honour opt-outs, keep waits long, and start with small lists.
 
 ---
 
@@ -161,7 +165,7 @@ You can stop the built-in gateway (`docker compose stop gateway`) once you no lo
 
 ## Configuration
 
-Everything is in `.env`; `.env.example` documents each value. Sending defaults (waits, breaks, daily limit, typing indicator) are under **Settings** in the app, and each broadcast can change them.
+Everything is in `.env`; `.env.example` documents each value. Sending defaults (waits, breaks, daily limit, typing indicator, sender rotation) are under **Settings** in the app, and each broadcast can change them.
 
 ## Keep it safe
 
@@ -178,5 +182,5 @@ Everything is in `.env`; `.env.example` documents each value. Sending defaults (
 | "WhatsApp service is not reachable" banner | The gateway (or Evolution) isn't running. Check `docker compose logs gateway`. |
 | "Not linked" | Nobody scanned the QR in time. Click **Show QR code**. |
 | "Logged out from phone" | The device was removed on the phone. Click **Show QR code** and scan again. |
-| A group shows "Can't post" | Only admins can post there, and this account isn't an admin. |
+| Contacts stay "Not checked yet" | Checks run through a connected account. Link one and keep the worker running. |
 | Campaign stuck on "Scheduled" | The worker or beat isn't running: `docker compose logs worker beat`. Without Docker, keep `npm run dev` open. |

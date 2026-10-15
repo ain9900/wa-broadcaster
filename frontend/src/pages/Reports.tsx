@@ -11,7 +11,6 @@ type Report = {
   from: string;
   to: string;
   totals: Counts;
-  by_kind: Partial<Record<'group' | 'contact', Counts>>;
   days: ({ date: string } & Counts)[];
   accounts: ({ account_id: number | null; label: string } & Counts)[];
   campaigns: ({ id: number; name: string; status: CampaignStatus } & Counts)[];
@@ -116,16 +115,6 @@ export default function Reports() {
 
           <div className="grid-2">
             <section className="panel">
-              <h2>By recipient type</h2>
-              <table className="table">
-                <thead><tr><th>Type</th><th className="num">Sent</th><th className="num">Failed</th><th className="num">Skipped</th><th className="num">Rate</th></tr></thead>
-                <tbody>
-                  {(['group', 'contact'] as const).map(k => (
-                    <tr key={k}><td>{k === 'group' ? 'Groups' : 'Contacts'}</td><CountsCells c={data.by_kind[k] ?? { sent: 0, failed: 0, skipped: 0 }} /></tr>
-                  ))}
-                </tbody>
-              </table>
-
               <h2>By account</h2>
               {data.accounts.length ? (
                 <table className="table">

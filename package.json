@@ -2,7 +2,7 @@
   "name": "wa-broadcaster",
   "version": "2.0.0",
   "private": true,
-  "description": "Link WhatsApp accounts by QR code and post one announcement to many groups. Django + Celery backend, React frontend.",
+  "description": "Link WhatsApp accounts by QR code and send one message to many contacts, one at a time. Django + Celery backend, React frontend.",
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "dev": "node scripts/dev.mjs",

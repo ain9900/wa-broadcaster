@@ -1,7 +1,7 @@
 """The sending engine.
 
-Only one campaign sends at a time (like a person working through a list), so accounts are never
-hammered by two sends at once. All progress lives in the database, which means a crash or restart
+Each workspace sends one campaign at a time (like a person working through a list), so its accounts
+are never hammered by two sends at once. Different workspaces send side by side. All progress lives in the database, which means a crash or restart
 resumes where it stopped instead of losing the send. Celery (tasks.py) and the no-Docker
 `manage.py run_worker` loop both drive the same two functions: claim_next() and run_campaign().
 """
@@ -56,15 +56,16 @@ def recover_stale(force: bool = False) -> int:
 
 
 def claim_next() -> Campaign | None:
-    """Atomically move the next due campaign to RUNNING. None if nothing is due or one is already running."""
+    """Atomically move the next due campaign to RUNNING. None if nothing is due.
+    A workspace that already has a campaign running waits until it finishes."""
     if not cache.add("broadcasts:claim-lock", 1, timeout=30):
         return None
     try:
         recover_stale()
-        if Campaign.objects.filter(status=S.RUNNING).exists():
-            return None
         now = timezone.now()
-        nxt = Campaign.objects.filter(status=S.SCHEDULED, scheduled_at__lte=now).order_by("scheduled_at", "id").first()
+        busy = Campaign.objects.filter(status=S.RUNNING).values("owner_id")
+        nxt = (Campaign.objects.filter(status=S.SCHEDULED, scheduled_at__lte=now).exclude(owner_id__in=busy)
+               .order_by("scheduled_at", "id").first())
         if not nxt:
             return None
         claimed = Campaign.objects.filter(pk=nxt.pk, status=S.SCHEDULED).update(status=S.RUNNING, heartbeat_at=now)
@@ -139,7 +140,7 @@ def _resolve_contact(provider, account, target: CampaignTarget) -> tuple[str | N
                 return None, T.FAILED, f"+{phone} is not on WhatsApp."
             return contact.wa_jid or target.recipient_jid, None, ""
     resolved = provider.check_number(account.session_id, phone)  # may raise ProviderError
-    record_results({phone: resolved})
+    record_results({phone: resolved}, owner=account.owner_id)
     if not resolved:
         return None, T.FAILED, f"+{phone} is not on WhatsApp."
     return resolved, None, ""
@@ -210,7 +211,7 @@ def run_campaign(campaign_id: int) -> str | None:
 
     Campaign.objects.filter(pk=campaign.pk, started_at__isnull=True).update(started_at=timezone.now())
     provider = get_provider()
-    typing = campaign.typing_indicator and AppSettings.load().typing_indicator
+    typing = campaign.typing_indicator and AppSettings.load(campaign.owner).typing_indicator
     try:
         media = _load_media(campaign)
     except OSError:

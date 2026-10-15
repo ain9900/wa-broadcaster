@@ -4,8 +4,8 @@ import type { CampaignDetail, CampaignTarget, TargetStatus } from '../lib/types'
 import { Countdown, Pill, Progress } from './ui';
 
 const who = (t: CampaignTarget) => {
-  const phone = t.kind === 'contact' ? '+' + t.recipient_jid.split('@')[0] : '';
-  return { name: t.recipient_name || phone || t.recipient_jid, sub: [t.recipient_name ? phone : '', t.account_label].filter(Boolean).join(' · ') };
+  const phone = '+' + t.phone;
+  return { name: t.recipient_name || phone, sub: [t.recipient_name ? phone : '', t.account_label].filter(Boolean).join(' · ') };
 };
 
 /** Seconds still to go: average wait per remaining message plus the breaks still ahead. */

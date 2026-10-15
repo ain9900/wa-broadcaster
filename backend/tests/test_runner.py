@@ -6,13 +6,14 @@ from django.utils import timezone
 from apps.broadcasts import runner
 from apps.broadcasts.models import Campaign, CampaignTarget
 from apps.core.models import AppSettings
+from tests.helpers import me
 
 pytestmark = pytest.mark.django_db
 S, T = Campaign.Status, CampaignTarget.Status
 
 
 def make_campaign(senders, contacts, message="Hello *all*", **kw):
-    c = Campaign.objects.create(message=message, delay_min_seconds=0, delay_max_seconds=0, batch_size=0, **kw)
+    c = Campaign.objects.create(owner=me(), message=message, delay_min_seconds=0, delay_max_seconds=0, batch_size=0, **kw)
     c.sender_accounts.set(senders)
     for i, ct in enumerate(contacts):
         CampaignTarget.objects.create(campaign=c, contact=ct, recipient_jid=f"{ct.phone}@s.whatsapp.net",
@@ -44,7 +45,7 @@ def test_one_failure_does_not_stop_the_send(provider, account, contacts):
 
 
 def test_daily_limit_skips_extra_messages(provider, account, contacts):
-    s = AppSettings.load()
+    s = AppSettings.load(me())
     s.daily_limit = 2
     s.save()
     c = make_campaign([account], contacts)

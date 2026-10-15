@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ConfirmButton, Empty, PageHeader, Pill, Spinner, useToast } from '../components/ui';
 import { api, ApiError } from '../lib/api';
-import { accountStatus, relative } from '../lib/format';
+import { accountStatus } from '../lib/format';
 import type { Account, AccountsResponse } from '../lib/types';
 
 const BUSY = ['starting', 'qr', 'reconnecting'];
@@ -19,7 +19,6 @@ export default function Accounts() {
   });
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['accounts'] });
-    qc.invalidateQueries({ queryKey: ['groups'] });
     qc.invalidateQueries({ queryKey: ['dashboard'] });
   };
 
@@ -50,7 +49,7 @@ export default function Accounts() {
           On the phone: open WhatsApp → <b>Settings</b> (or ⋮ menu) → <b>Linked devices</b> → <b>Link a device</b>, then scan the QR code that appears here.
         </div>
         <p className="small" style={{ margin: 0 }}>
-          This uses an unofficial WhatsApp Web connection. Numbers can be banned for bulk sending. Post only to groups you really belong to and keep waits long.
+          This uses an unofficial WhatsApp Web connection. Numbers can be banned for bulk sending. Only message people who expect it, and keep waits long.
         </p>
       </section>
 
@@ -103,11 +102,10 @@ function AccountCard({ a, onChange }: { a: Account; onChange: () => void }) {
         <span className="name">{a.label}</span>
         <Pill tone={tone}>{text}</Pill>
       </div>
-      {a.phone && <span className="meta">+{a.phone}{a.display_name ? ` · ${a.display_name}` : ''} · {a.group_count} groups</span>}
+      {a.phone && <span className="meta">+{a.phone}{a.display_name ? ` · ${a.display_name}` : ''}</span>}
       {a.phone && (
         <span className="small">
           Sent today: {a.sent_today}{a.effective_daily_limit ? ` of ${a.effective_daily_limit}` : ''}
-          {' · '}Groups refreshed {relative(a.groups_synced_at)}
         </span>
       )}
       {a.qr && (
@@ -135,11 +133,6 @@ function AccountCard({ a, onChange }: { a: Account; onChange: () => void }) {
         <div className="row">
           {['disconnected', 'logged_out', 'error'].includes(a.status) && (
             <button type="button" className="primary" disabled={call.isPending} onClick={() => call.mutate({ path: 'relink/' })}>Show QR code</button>
-          )}
-          {a.status === 'connected' && (
-            <button type="button" disabled={call.isPending} onClick={() => call.mutate({ path: 'sync-groups/' }, { onSuccess: () => toast('Groups refreshed') })}>
-              Refresh groups
-            </button>
           )}
           <button type="button" className="ghost" onClick={() => setEditing(true)}>Edit</button>
           <ConfirmButton confirm={forceRemove ? 'Remove from this app only?' : 'Unlink and remove?'} onConfirm={remove}>

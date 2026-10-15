@@ -1,22 +1,20 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import { plural } from '../lib/format';
-import type { AccountGroups, Contact, ContactList, Page } from '../lib/types';
-import { Empty } from './ui';
+import type { Contact, ContactList, Page } from '../lib/types';
 
 export type ContactLite = Pick<Contact, 'id' | 'name' | 'phone'>;
 
-/** Everything the composer needs to send to individual numbers. */
+/** Who a broadcast goes to. */
 export type ContactPick = {
-  senders: number[]; // account ids that send to contacts, in turn
   listIds: number[];
   contacts: ContactLite[];
   numbers: string; // pasted, one per line or comma-separated
 };
 
-export const emptyPick = (): ContactPick => ({ senders: [], listIds: [], contacts: [], numbers: '' });
+export const emptyPick = (): ContactPick => ({ listIds: [], contacts: [], numbers: '' });
 
 export const pastedCount = (numbers: string) => numbers.split(/[\n,;]+/).filter(t => t.trim()).length;
 
@@ -26,9 +24,7 @@ export function pickCount(p: ContactPick, lists: ContactList[] | undefined): num
   return p.contacts.length + fromLists + pastedCount(p.numbers);
 }
 
-export default function ContactPicker({ value, onChange, accounts }: {
-  value: ContactPick; onChange: (p: ContactPick) => void; accounts: AccountGroups[];
-}) {
+export default function ContactPicker({ value, onChange }: { value: ContactPick; onChange: (p: ContactPick) => void }) {
   const [q, setQ] = useState('');
   const lists = useQuery({ queryKey: ['contact-lists'], queryFn: () => api<ContactList[]>('/contact-lists/') });
   const found = useQuery({
@@ -37,38 +33,12 @@ export default function ContactPicker({ value, onChange, accounts }: {
     enabled: q.trim().length > 0,
   });
 
-  // Default (once): every connected account shares the work.
-  const defaulted = useRef(false);
-  useEffect(() => {
-    if (defaulted.current || !accounts.length) return;
-    defaulted.current = true;
-    if (!value.senders.length) onChange({ ...value, senders: accounts.map(a => a.account_id) });
-  }, [accounts, value, onChange]);
-
   const set = (patch: Partial<ContactPick>) => onChange({ ...value, ...patch });
   const toggle = <T,>(arr: T[], x: T, on: boolean) => (on ? [...arr.filter(y => y !== x), x] : arr.filter(y => y !== x));
   const picked = new Set(value.contacts.map(c => c.id));
 
-  if (!accounts.length) {
-    return <Empty>Link and connect a WhatsApp account first.<br /><Link className="btn primary" to="/accounts" style={{ marginTop: 10 }}>Go to Accounts</Link></Empty>;
-  }
-
   return (
     <div className="stack">
-      <fieldset className="opts">
-        <legend>Send from</legend>
-        <div className="row">
-          {accounts.map(a => (
-            <label key={a.account_id} className="row chip-check">
-              <input type="checkbox" checked={value.senders.includes(a.account_id)}
-                onChange={e => set({ senders: toggle(value.senders, a.account_id, e.target.checked) })} />
-              {a.label} <span className="meta">+{a.phone}</span>
-            </label>
-          ))}
-        </div>
-        <p className="small" style={{ margin: 0 }}>With more than one account, contacts are shared out between them in turn, so each account sends fewer messages.</p>
-      </fieldset>
-
       <div className="stack">
         <span className="lbl">Contact lists</span>
         {lists.data?.length ? (

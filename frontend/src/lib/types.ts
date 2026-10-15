@@ -1,4 +1,15 @@
-export type User = { id: number; username: string; name: string; is_superuser: boolean };
+export type User = {
+  id: number; username: string; name: string; is_superuser: boolean;
+  /** false for team members, who work in someone else's workspace */
+  is_owner: boolean;
+  role: 'owner' | TeamRole;
+  /** the owner's name, for team members */
+  workspace: string | null;
+};
+
+export type TeamRole = 'employee' | 'support';
+
+export type TeamMember = { id: number; username: string; name: string; role: TeamRole; last_login: string | null; created_at: string };
 
 export type AccountStatus = 'starting' | 'qr' | 'connected' | 'reconnecting' | 'disconnected' | 'logged_out' | 'error';
 
@@ -14,8 +25,6 @@ export type Account = {
   daily_limit: number | null;
   effective_daily_limit: number;
   sent_today: number;
-  group_count: number;
-  groups_synced_at: string | null;
   connected_at: string | null;
   created_at: string;
   qr: string | null;
@@ -23,17 +32,15 @@ export type Account = {
 
 export type AccountsResponse = { provider: string; provider_online: boolean; results: Account[] };
 
-export type Group = { id: number; jid: string; name: string; size: number; admins_only: boolean; is_admin: boolean | null; can_post: boolean };
-
-export type AccountGroups = { account_id: number; label: string; phone: string; groups_synced_at: string | null; groups: Group[] };
-
-export type Media = { id: number; original_name: string; mime_type: string; size: number; kind: 'image' | 'video' | 'audio' | 'document'; url: string; created_at: string };
+export type Media = {
+  id: number; original_name: string; mime_type: string; size: number; kind: 'image' | 'video' | 'audio' | 'document';
+  url: string; public_url: string | null; source_url: string; created_at: string;
+};
 
 export type Template = { id: number; title: string; body: string; created_at: string; updated_at: string };
 
-export type TargetRef = { account_id: number; group_jid: string };
-
-export type GroupSet = { id: number; name: string; targets: TargetRef[]; created_at: string; updated_at: string };
+/** How a campaign shares its recipients between the sender accounts. */
+export type Rotation = 'turns' | 'random' | 'balanced';
 
 export type CampaignStatus = 'scheduled' | 'running' | 'paused' | 'completed' | 'cancelled';
 export type TargetStatus = 'pending' | 'sending' | 'sent' | 'failed' | 'skipped';
@@ -61,15 +68,18 @@ export type Campaign = {
   failed: number;
   skipped: number;
   pending: number;
+  sender_account_ids: number[];
+  rotation_mode: Rotation;
+  rotate_every: number;
+  failover: boolean;
 };
 
 export type CampaignTarget = {
   id: number;
-  kind: 'group' | 'contact';
   contact_id: number | null;
   account_id: number | null;
   account_label: string;
-  recipient_jid: string;
+  phone: string;
   recipient_name: string;
   status: TargetStatus;
   error: string;
@@ -90,6 +100,9 @@ export type Settings = {
   batch_pause_minutes: number;
   typing_indicator: boolean;
   default_country_code: string;
+  rotation_mode: Rotation;
+  rotate_every: number;
+  failover: boolean;
   updated_at: string;
 };
 
@@ -109,6 +122,7 @@ export type Contact = {
   lists: number[];
   opted_out: boolean;
   on_whatsapp: boolean | null;
+  checked_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -122,4 +136,10 @@ export type ImportResult = {
   invalid: { line: number; text: string }[];
   invalid_count: number;
   list: ContactList | null;
+  validation: Validation;
+  columns: { name_column: string | null; phone_column: string | null } | null;
+  garbled_names: number;
 };
+
+/** How many numbers are on WhatsApp, not on it, or still waiting to be checked. */
+export type Validation = { total: number; valid: number; invalid: number; pending: number; opted_out: number };

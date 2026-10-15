@@ -91,6 +91,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .ghost { background: transparent; border-color: transparent; color: var(--muted); padding: 6px 8px; }
 .ghost:hover { color: var(--ink); }
+.linklike { display: inline; background: none; border: 0; padding: 0; color: var(--accent); font-size: inherit; text-decoration: underline; }
 .danger { color: var(--danger); border-color: var(--danger); }
 input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); flex: none; margin: 0; }
 .fmt button { font-family: var(--mono); font-weight: 500; padding: 6px 10px; min-width: 38px; justify-content: center; }

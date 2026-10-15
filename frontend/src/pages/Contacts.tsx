@@ -3,7 +3,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { ConfirmButton, Empty, PageHeader, Pill, Spinner, useToast } from '../components/ui';
 import { api } from '../lib/api';
 import { plural } from '../lib/format';
-import type { Contact, ContactList, ImportResult, Page } from '../lib/types';
+import type { Contact, ContactList, ImportResult, Page, Validation } from '../lib/types';
 
 export const formatPhone = (p: string) => '+' + p;
 
@@ -12,6 +12,7 @@ export default function Contacts() {
   const qc = useQueryClient();
   const [q, setQ] = useState('');
   const [listFilter, setListFilter] = useState<number | ''>('');
+  const [valid, setValid] = useState<'' | 'yes' | 'no' | 'pending'>('');
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [panel, setPanel] = useState<'add' | 'import' | null>(null);
@@ -19,13 +20,20 @@ export default function Contacts() {
   const params = new URLSearchParams({ page: String(page) });
   if (q.trim()) params.set('q', q.trim());
   if (listFilter) params.set('list', String(listFilter));
+  if (valid) params.set('valid', valid);
   const exportParams = new URLSearchParams(params);
   exportParams.delete('page');
 
   const contacts = useQuery({
-    queryKey: ['contacts', q, listFilter, page],
+    queryKey: ['contacts', q, listFilter, valid, page],
     queryFn: () => api<Page<Contact>>(`/contacts/?${params}`),
     placeholderData: keepPreviousData,
+  });
+  // Numbers are checked for WhatsApp in the background; poll while some are still waiting.
+  const checks = useQuery({
+    queryKey: ['contacts', 'validation'],
+    queryFn: () => api<Validation>('/contacts/validation/'),
+    refetchInterval: r => (r.state.data?.pending ? 5000 : false),
   });
   const lists = useQuery({ queryKey: ['contact-lists'], queryFn: () => api<ContactList[]>('/contact-lists/') });
   const listName = (id: number) => lists.data?.find(l => l.id === id)?.name ?? '';
@@ -38,7 +46,7 @@ export default function Contacts() {
     mutationFn: (body: { action: string; list_id?: number }) =>
       api<{ affected: number }>('/contacts/bulk/', { method: 'POST', body: { ...body, ids: [...selected] } }),
     onSuccess: (r, v) => {
-      toast(`${plural(r.affected, 'contact')} ${{ delete: 'deleted', opt_out: 'opted out', opt_in: 'opted back in', add_to_list: 'added to the list', remove_from_list: 'removed from the list' }[v.action as 'delete']}`);
+      toast(`${plural(r.affected, 'contact')} ${{ delete: 'deleted', opt_out: 'opted out', opt_in: 'opted back in', add_to_list: 'added to the list', remove_from_list: 'removed from the list', recheck: 'queued to be checked again' }[v.action as 'delete']}`);
       if (v.action === 'delete') setSelected(new Set());
       refresh();
     },
@@ -104,8 +112,21 @@ export default function Contacts() {
         <section className="panel">
           <div className="row spread">
             <input type="search" placeholder="Search name or number" value={q} onChange={e => { setQ(e.target.value); setPage(1); }} style={{ maxWidth: 320 }} />
+            <select aria-label="Filter by WhatsApp check" value={valid} onChange={e => { setValid(e.target.value as typeof valid); setPage(1); }}>
+              <option value="">Any WhatsApp status</option>
+              <option value="yes">On WhatsApp</option>
+              <option value="no">Not on WhatsApp</option>
+              <option value="pending">Not checked yet</option>
+            </select>
             <span className="meta">{contacts.data ? plural(contacts.data.count, 'contact') : ''}</span>
           </div>
+          {checks.data && checks.data.total > 0 && (
+            <p className="small" style={{ margin: 0 }}>
+              {checks.data.valid.toLocaleString()} on WhatsApp · {checks.data.invalid.toLocaleString()} not on WhatsApp
+              {checks.data.pending ? ` · ${checks.data.pending.toLocaleString()} being checked (needs a connected account)` : ''}.
+              {' '}Numbers not on WhatsApp are left out of broadcasts automatically.
+            </p>
+          )}
 
           {selected.size > 0 && (
             <div className="row toolbar">
@@ -117,6 +138,7 @@ export default function Contacts() {
               {listFilter !== '' && <button type="button" onClick={() => bulk.mutate({ action: 'remove_from_list', list_id: listFilter })}>Remove from this list</button>}
               <button type="button" onClick={() => bulk.mutate({ action: 'opt_out' })}>Opt out</button>
               <button type="button" onClick={() => bulk.mutate({ action: 'opt_in' })}>Opt in</button>
+              <button type="button" onClick={() => bulk.mutate({ action: 'recheck' })} title="Check these numbers for WhatsApp again">Re-check</button>
               <ConfirmButton className="danger" confirm={`Delete ${selected.size}?`} onConfirm={() => bulk.mutateAsync({ action: 'delete' })}>Delete</ConfirmButton>
               <button type="button" className="ghost" onClick={() => setSelected(new Set())}>Clear selection</button>
             </div>
@@ -254,8 +276,8 @@ function ImportContacts({ lists, onDone }: { lists: ContactList[]; onDone: () =>
     <form className="panel" onSubmit={e => { e.preventDefault(); run.mutate(); }}>
       <h2>Import contacts</h2>
       <p className="small" style={{ margin: 0 }}>
-        Paste one contact per line, or upload a CSV saved from Excel or Google Sheets. Each line needs a phone number and can have a name, in either order:
-        <code className="inline"> Rahim, 01712345678</code>. Numbers without a country code get the one from Settings. Numbers already saved are updated, not duplicated.
+        Paste one contact per line, or upload a CSV saved from Excel or Google Sheets. With a header row (e.g. <code className="inline">Name,Phone</code>), only the name and phone columns are used and the rest are ignored.
+        Without one, each line needs a phone number and can have a name, in either order: <code className="inline"> Rahim, 01712345678</code>. Numbers without a country code get the one from Settings. Numbers already saved are updated, not duplicated.
       </p>
       <textarea value={text} onChange={e => setText(e.target.value)} placeholder={'Rahim, +8801712345678\nKarim, 01812345678\n8801912345678'} style={{ minHeight: 140 }} />
       <div className="row">
@@ -271,6 +293,9 @@ function ImportContacts({ lists, onDone }: { lists: ContactList[]; onDone: () =>
       {result && (
         <div className={result.invalid_count ? 'note' : 'note ok'}>
           {plural(result.created, 'new contact')}, {plural(result.updated, 'name')} updated{result.list ? `, added to "${result.list.name}"` : ''}.
+          {result.columns && ` Names from the "${result.columns.name_column ?? '(none)'}" column, numbers from "${result.columns.phone_column ?? 'any column'}"; other columns were ignored.`}
+          {result.garbled_names > 0 && <><br />{plural(result.garbled_names, 'name')} came through as "???": the file lost its Bangla letters. In Excel use <b>Save As → CSV UTF-8</b>, then import again to fix the names.</>}
+          {result.validation?.pending > 0 && ` ${plural(result.validation.pending, 'number')} will now be checked for WhatsApp in the background.`}
           {result.invalid_count > 0 && (
             <>
               {' '}{plural(result.invalid_count, 'line')} had no valid number and were skipped:

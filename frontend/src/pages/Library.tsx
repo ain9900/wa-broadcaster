@@ -3,17 +3,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { ConfirmButton, Empty, PageHeader, useToast } from '../components/ui';
 import { api } from '../lib/api';
-import { dateTime, plural, waToHtml } from '../lib/format';
-import type { GroupSet, Template } from '../lib/types';
+import { dateTime, waToHtml } from '../lib/format';
+import type { Template } from '../lib/types';
 
 export default function Library() {
   return (
     <>
-      <PageHeader title="Templates & group sets" sub="Messages you send often, and saved selections of groups." />
-      <div className="grid-2">
-        <Templates />
-        <Sets />
-      </div>
+      <PageHeader title="Templates" sub="Messages you send often. To save a group of people, make a contact list on the Contacts page." />
+      <Templates />
     </>
   );
 }
@@ -82,31 +79,6 @@ function Templates() {
           ))}
         </ul>
       ) : !edit && <Empty>No templates yet. Save one here or from the composer.</Empty>}
-    </section>
-  );
-}
-
-function Sets() {
-  const qc = useQueryClient();
-  const { data } = useQuery({ queryKey: ['group-sets'], queryFn: () => api<GroupSet[]>('/group-sets/') });
-  const remove = useMutation({
-    mutationFn: (id: number) => api(`/group-sets/${id}/`, { method: 'DELETE' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['group-sets'] }),
-  });
-  return (
-    <section className="panel">
-      <h2>Group sets</h2>
-      <p className="small" style={{ margin: 0 }}>Create a set in the composer: tick groups, name them, then "Save as group set". Saving under an existing name replaces it.</p>
-      {data?.length ? (
-        <ul className="list">
-          {data.map(s => (
-            <li key={s.id}>
-              <span className="grow"><span className="name">{s.name}</span><span className="small">{plural(s.targets.length, 'group')} · updated {dateTime(s.updated_at)}</span></span>
-              <ConfirmButton confirm="Delete?" onConfirm={() => remove.mutateAsync(s.id)}>Delete</ConfirmButton>
-            </li>
-          ))}
-        </ul>
-      ) : <Empty>No group sets yet.</Empty>}
     </section>
   );
 }

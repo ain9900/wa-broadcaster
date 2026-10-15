@@ -4,6 +4,7 @@ from apps.broadcasts import runner
 from apps.broadcasts.models import Campaign, CampaignTarget
 from apps.contacts.models import Contact
 from apps.whatsapp.models import WhatsAppAccount
+from tests.helpers import me
 
 pytestmark = pytest.mark.django_db
 T = CampaignTarget.Status
@@ -11,16 +12,16 @@ T = CampaignTarget.Status
 
 @pytest.fixture
 def senders(account):
-    b = WhatsAppAccount.objects.create(label="Shop", provider="fake", status="connected", phone="8801999999991")
-    c = WhatsAppAccount.objects.create(label="Home", provider="fake", status="connected", phone="8801999999992")
+    b = WhatsAppAccount.objects.create(owner=me(), label="Shop", provider="fake", status="connected", phone="8801999999991")
+    c = WhatsAppAccount.objects.create(owner=me(), label="Home", provider="fake", status="connected", phone="8801999999992")
     return [account, b, c]
 
 
 def contact_campaign(senders, n, **kw):
-    c = Campaign.objects.create(message="Hi {name}", delay_min_seconds=0, delay_max_seconds=0, batch_size=0, **kw)
+    c = Campaign.objects.create(owner=me(), message="Hi {name}", delay_min_seconds=0, delay_max_seconds=0, batch_size=0, **kw)
     c.sender_accounts.set(senders)
     for i in range(n):
-        ct = Contact.objects.create(phone=f"88017000001{i:02d}", name=f"C{i}")
+        ct = Contact.objects.create(owner=me(), phone=f"88017000001{i:02d}", name=f"C{i}")
         CampaignTarget.objects.create(campaign=c, contact=ct, account=None, account_label="",
                                       recipient_jid=f"{ct.phone}@s.whatsapp.net", recipient_name=ct.name, position=i)
     return c
@@ -100,7 +101,7 @@ def test_rotation_resumes_after_restart(provider, senders):
 
 
 def test_create_stores_rotation_and_defers_sender(client, provider, senders):
-    ct = Contact.objects.create(phone="8801700000001")
+    ct = Contact.objects.create(owner=me(), phone="8801700000001")
     r = client.post("/api/campaigns/", {
         "message": "x", "contact_ids": [ct.id], "sender_account_ids": [a.id for a in senders],
         "rotation_mode": "turns", "rotate_every": 3, "failover": False,

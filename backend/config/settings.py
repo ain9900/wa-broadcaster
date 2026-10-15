@@ -101,6 +101,8 @@ STATIC_ROOT = Path(env("STATIC_ROOT", BASE_DIR / "staticfiles"))
 MEDIA_URL = "/media/"
 MEDIA_ROOT = Path(env("MEDIA_ROOT", BASE_DIR / "media"))
 MAX_UPLOAD_MB = int(env("MAX_UPLOAD_MB", "25"))
+# Let anyone who can open the site create their own account (and empty workspace) from the sign-in page.
+ALLOW_SIGNUP = env_bool("ALLOW_SIGNUP", False)
 # Base of public file links, e.g. https://wa.yourdomain.com (empty = the address the site was opened on).
 PUBLIC_BASE_URL = env("PUBLIC_BASE_URL", "").rstrip("/")
 DATA_UPLOAD_MAX_MEMORY_SIZE = 2 * 1024 * 1024

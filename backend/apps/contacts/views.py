@@ -7,6 +7,7 @@ from rest_framework.response import Response
 
 from apps.core.csvutil import csv_response
 from apps.core.models import AppSettings
+from apps.core.workspace import WorkspaceMixin
 
 from .models import Contact, ContactList
 from .phones import parse_lines
@@ -20,8 +21,8 @@ class ContactPagination(PageNumberPagination):
     max_page_size = 500
 
 
-def filtered_contacts(params):
-    qs = Contact.objects.all()
+def filtered_contacts(owner, params):
+    qs = Contact.objects.filter(owner=owner)
     q = (params.get("q") or "").strip()
     if q:
         digits = "".join(ch for ch in q if ch.isdigit())
@@ -43,22 +44,25 @@ def filtered_contacts(params):
     return qs
 
 
-class ContactViewSet(viewsets.ModelViewSet):
+class ContactViewSet(WorkspaceMixin, viewsets.ModelViewSet):
     serializer_class = ContactSerializer
     pagination_class = ContactPagination
 
     def get_queryset(self):
-        return filtered_contacts(self.request.query_params).prefetch_related("lists")
+        return filtered_contacts(self.workspace, self.request.query_params).prefetch_related("lists")
+
+    def perform_create(self, serializer):
+        serializer.save(owner=self.workspace)
 
     @action(detail=False, methods=["get"])
     def ids(self, request):
         """Every id matching the current filters (for "select all")."""
-        return Response(list(filtered_contacts(request.query_params).values_list("id", flat=True)[:50000]))
+        return Response(list(filtered_contacts(self.workspace, request.query_params).values_list("id", flat=True)[:50000]))
 
     @action(detail=False, methods=["get"])
     def export(self, request):
         """Contacts matching the current filters as CSV (same columns the importer reads back)."""
-        qs = filtered_contacts(request.query_params).prefetch_related("lists").order_by("name", "phone")
+        qs = filtered_contacts(self.workspace, request.query_params).prefetch_related("lists").order_by("name", "phone")
         rows = ([c.name, "+" + c.phone, ", ".join(l.name for l in c.lists.all()), "yes" if c.opted_out else "",
                  {True: "yes", False: "no", None: "not checked yet"}[c.on_whatsapp], c.checked_at]
                 for c in qs.iterator(chunk_size=2000))
@@ -69,16 +73,18 @@ class ContactViewSet(viewsets.ModelViewSet):
         s = ImportSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         d = s.validated_data
-        cc = AppSettings.load().default_country_code
+        ws = self.workspace
+        cc = AppSettings.load(ws).default_country_code
 
         target_list = None
         if d.get("new_list", "").strip():
-            target_list, _ = ContactList.objects.get_or_create(name=d["new_list"].strip())
+            target_list = (ContactList.objects.filter(owner=ws, name__iexact=d["new_list"].strip()).first()
+                           or ContactList.objects.create(owner=ws, name=d["new_list"].strip()))
         elif d.get("list_id"):
-            target_list = ContactList.objects.filter(pk=d["list_id"]).first()
+            target_list = ContactList.objects.filter(pk=d["list_id"], owner=ws).first()
 
-        rows, invalid = {}, []
-        for line_no, phone, name, raw in parse_lines(d["text"], cc):
+        rows, invalid, columns = {}, [], {}
+        for line_no, phone, name, raw in parse_lines(d["text"], cc, columns):
             if not phone:
                 if not (line_no == 1 and not any(ch.isdigit() for ch in raw)):  # skip a header row quietly
                     invalid.append({"line": line_no, "text": raw[:80]})
@@ -88,8 +94,9 @@ class ContactViewSet(viewsets.ModelViewSet):
 
         created = updated = 0
         with transaction.atomic():
-            existing = {c.phone: c for c in Contact.objects.filter(phone__in=rows)}
-            new = [Contact(phone=p, name=n) for p, n in rows.items() if p not in existing]
+            mine = Contact.objects.filter(owner=ws)
+            existing = {c.phone: c for c in mine.filter(phone__in=rows)}
+            new = [Contact(owner=ws, phone=p, name=n) for p, n in rows.items() if p not in existing]
             Contact.objects.bulk_create(new, batch_size=1000)
             created = len(new)
             if d["update_names"]:
@@ -99,25 +106,28 @@ class ContactViewSet(viewsets.ModelViewSet):
                 Contact.objects.bulk_update(changed, ["name"], batch_size=1000)
                 updated = len(changed)
             if target_list:
-                target_list.contacts.add(*Contact.objects.filter(phone__in=rows).values_list("id", flat=True))
-        imported = Contact.objects.filter(phone__in=rows)
+                target_list.contacts.add(*mine.filter(phone__in=rows).values_list("id", flat=True))
+        imported = mine.filter(phone__in=rows)
         return Response({
             "total": len(rows), "created": created, "updated": updated, "invalid": invalid[:200],
             "invalid_count": len(invalid), "list": ContactListSerializer(target_list).data if target_list else None,
             "validation": validation_summary(imported),
+            "columns": columns or None,
+            # Letters lost before upload (e.g. Bangla in a CSV that Excel saved without UTF-8) arrive as "???".
+            "garbled_names": sum(1 for n in rows.values() if "??" in n),
         })
 
     @action(detail=False, methods=["get"])
     def validation(self, request):
         """How many numbers (matching the filters) are valid, not on WhatsApp, or still being checked."""
-        return Response(validation_summary(filtered_contacts(request.query_params)))
+        return Response(validation_summary(filtered_contacts(self.workspace, request.query_params)))
 
     @action(detail=False, methods=["post"])
     def bulk(self, request):
         s = BulkSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         d = s.validated_data
-        qs = Contact.objects.filter(pk__in=d["ids"])
+        qs = Contact.objects.filter(owner=self.workspace, pk__in=d["ids"])
         act = d["action"]
         if act == "delete":
             n, _ = qs.delete()
@@ -126,7 +136,7 @@ class ContactViewSet(viewsets.ModelViewSet):
             return Response({"affected": qs.update(opted_out=act == "opt_out")})
         if act == "recheck":
             return Response({"affected": qs.update(checked_at=None)})
-        lst = ContactList.objects.filter(pk=d["list_id"]).first()
+        lst = ContactList.objects.filter(pk=d["list_id"], owner=self.workspace).first()
         if not lst:
             return Response({"error": "That list no longer exists."}, status=status.HTTP_404_NOT_FOUND)
         ids = list(qs.values_list("id", flat=True))
@@ -134,10 +144,13 @@ class ContactViewSet(viewsets.ModelViewSet):
         return Response({"affected": len(ids)})
 
 
-class ContactListViewSet(viewsets.ModelViewSet):
+class ContactListViewSet(WorkspaceMixin, viewsets.ModelViewSet):
     serializer_class = ContactListSerializer
     pagination_class = None
 
+    def perform_create(self, serializer):
+        serializer.save(owner=self.workspace)
+
     def get_queryset(self):
-        return ContactList.objects.annotate(
+        return ContactList.objects.filter(owner=self.workspace).annotate(
             contact_count=Count("contacts", filter=Q(contacts__opted_out=False) & ~Q(contacts__on_whatsapp=False)))

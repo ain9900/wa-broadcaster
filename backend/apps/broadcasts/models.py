@@ -16,6 +16,7 @@ def upload_to(instance, filename):
 
 
 class MediaFile(models.Model):
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
     file = models.FileField(upload_to=upload_to)
     original_name = models.CharField(max_length=200)
     mime_type = models.CharField(max_length=120)
@@ -52,6 +53,7 @@ class MediaFile(models.Model):
 
 
 class MessageTemplate(models.Model):
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
     title = models.CharField(max_length=80)
     body = models.TextField(max_length=60000)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
@@ -75,6 +77,7 @@ class Campaign(models.Model):
 
     ACTIVE = [Status.SCHEDULED, Status.RUNNING, Status.PAUSED]
 
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
     name = models.CharField(max_length=120, blank=True)
     message = models.TextField(blank=True, max_length=60000)
     media = models.ForeignKey(MediaFile, null=True, blank=True, on_delete=models.PROTECT, related_name="campaigns")

@@ -1,10 +1,10 @@
 import pytest
-from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
 from apps.contacts.models import Contact
 from apps.whatsapp.models import WhatsAppAccount
 from apps.whatsapp.providers import ProviderError, SessionState
+from tests.helpers import me
 
 
 class FakeProvider:
@@ -70,9 +70,18 @@ def provider(monkeypatch):
     return fake
 
 
+@pytest.fixture(autouse=True)
+def _defaults(settings):
+    """Tests don't follow the local .env; tests that need sign-up turn it on themselves."""
+    settings.ALLOW_SIGNUP = False
+
+
 @pytest.fixture
 def user(db):
-    return get_user_model().objects.create_user("admin", password="a-long-test-password")
+    u = me()
+    u.set_password("a-long-test-password")
+    u.save()
+    return u
 
 
 @pytest.fixture
@@ -84,10 +93,10 @@ def client(user):
 
 @pytest.fixture
 def account(db):
-    return WhatsAppAccount.objects.create(label="Office", provider="fake", status="connected", phone="8801000000000")
+    return WhatsAppAccount.objects.create(owner=me(), label="Office", provider="fake", status="connected", phone="8801000000000")
 
 
 @pytest.fixture
 def contacts(db):
     """Three saved contacts."""
-    return [Contact.objects.create(phone=f"88017000000{i}", name=f"C{i}") for i in range(1, 4)]
+    return [Contact.objects.create(owner=me(), phone=f"88017000000{i}", name=f"C{i}") for i in range(1, 4)]

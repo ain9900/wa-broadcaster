@@ -5,8 +5,9 @@ import LiveStatus from '../components/LiveStatus';
 import { ConfirmButton, Empty, PageHeader, Pill, Spinner, useToast } from '../components/ui';
 import { api } from '../lib/api';
 import { dateTime, fileSize, previewName, targetStatus, waToHtml } from '../lib/format';
-import type { CampaignDetail as Detail, TargetStatus } from '../lib/types';
+import type { CampaignDetail as Detail, Rotation, TargetStatus } from '../lib/types';
 
+const ROTATION: Record<Rotation, string> = { turns: 'taking turns', random: 'random', balanced: 'fewest sent today first' };
 const DONE: Record<string, string> = { cancel: 'Cancelled', pause: 'Paused', resume: 'Resumed' };
 
 export default function CampaignDetail() {
@@ -92,6 +93,7 @@ export default function CampaignDetail() {
             Waits {c.delay_min_seconds}–{c.delay_max_seconds}s between messages
             {c.batch_size ? `, ${c.batch_pause_minutes} min break every ${c.batch_size} messages` : ''}
             {c.typing_indicator ? ', shows "typing…"' : ''}.
+            {c.sender_account_ids.length > 1 && <> Sent from {c.sender_account_ids.length} accounts ({ROTATION[c.rotation_mode]}{c.rotation_mode === 'turns' ? `, ${c.rotate_every} per turn` : ''}{c.failover ? ', with failover' : ''}).</>}
           </p>
         </section>
 
@@ -111,8 +113,8 @@ export default function CampaignDetail() {
               return (
                 <li key={t.id} className={t.status === 'sending' ? 'sending-row' : ''}>
                   <span className="grow">
-                    <span className="name">{t.kind === 'contact' ? '👤 ' : '👥 '}{t.recipient_name || (t.kind === 'contact' ? '+' + t.recipient_jid.split('@')[0] : t.recipient_jid)}</span>
-                    <span className="small">{t.kind === 'contact' && t.recipient_name ? `+${t.recipient_jid.split('@')[0]} · ` : ''}{t.account_label}{t.sent_at ? ` · ${dateTime(t.sent_at)}` : ''}{t.error ? ` · ${t.error}` : ''}</span>
+                    <span className="name">{t.recipient_name || '+' + t.phone}</span>
+                    <span className="small">{t.recipient_name ? `+${t.phone}` : ''}{t.recipient_name && t.account_label ? ' · ' : ''}{t.account_label}{t.sent_at ? ` · ${dateTime(t.sent_at)}` : ''}{t.error ? ` · ${t.error}` : ''}</span>
                   </span>
                   <Pill tone={tt}>{tl}</Pill>
                 </li>

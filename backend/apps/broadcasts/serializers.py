@@ -10,6 +10,7 @@ from apps.contacts.models import Contact
 from apps.contacts.phones import jid as phone_jid
 from apps.contacts.phones import normalize
 from apps.core.models import AppSettings, Rotation
+from apps.core.workspace import workspace_of
 from apps.whatsapp.models import WhatsAppAccount
 
 from .models import Campaign, CampaignTarget, MediaFile, MessageTemplate
@@ -121,8 +122,13 @@ class CampaignCreateSerializer(serializers.Serializer):
     typing_indicator = serializers.BooleanField(required=False)
     scheduled_at = serializers.DateTimeField(required=False, allow_null=True)
 
+    @property
+    def workspace(self):
+        return workspace_of(self.context["request"].user)
+
     def validate(self, attrs):
-        defaults = AppSettings.load()
+        ws = self.workspace
+        defaults = AppSettings.load(ws)
         for f in ("delay_min_seconds", "delay_max_seconds", "batch_size", "batch_pause_minutes", "typing_indicator",
                   "rotation_mode", "rotate_every", "failover"):
             attrs.setdefault(f, getattr(defaults, f))
@@ -131,7 +137,7 @@ class CampaignCreateSerializer(serializers.Serializer):
 
         media = None
         if attrs.get("media_id"):
-            media = MediaFile.objects.filter(pk=attrs["media_id"]).first()
+            media = MediaFile.objects.filter(pk=attrs["media_id"], owner=ws).first()
             if not media:
                 raise serializers.ValidationError({"media_id": "The attached file is gone. Attach it again."})
         attrs["media"] = media
@@ -144,11 +150,11 @@ class CampaignCreateSerializer(serializers.Serializer):
         attrs["scheduled_at"] = when or timezone.now()
 
         senders = list(WhatsAppAccount.objects.filter(
-            pk__in=attrs["sender_account_ids"], status=WhatsAppAccount.Status.CONNECTED).order_by("id"))
+            pk__in=attrs["sender_account_ids"], owner=ws, status=WhatsAppAccount.Status.CONNECTED).order_by("id"))
         if not senders:
             raise serializers.ValidationError({"sender_account_ids": "Pick at least one connected WhatsApp account to send from."})
 
-        contacts, invalid = self._resolve_contacts(attrs, defaults.default_country_code)
+        contacts, invalid = self._resolve_contacts(attrs, defaults.default_country_code, ws)
         if not contacts:
             raise serializers.ValidationError({"contact_ids": (
                 "None of these numbers are on WhatsApp." if invalid else "Add some numbers: import a file, paste them, or pick a list.")})
@@ -157,12 +163,13 @@ class CampaignCreateSerializer(serializers.Serializer):
         attrs.update(resolved_contacts=contacts, senders=senders)
         return attrs
 
-    def _resolve_contacts(self, attrs, country_code):
+    def _resolve_contacts(self, attrs, country_code, ws):
         """Saved contacts + list members + pasted numbers, de-duplicated. Opted-out contacts and numbers
         already validated as not on WhatsApp are left out. Returns (contacts, how many were not on WhatsApp)."""
-        picked = {c.phone: c for c in Contact.objects.filter(pk__in=attrs["contact_ids"])}
+        mine = Contact.objects.filter(owner=ws)
+        picked = {c.phone: c for c in mine.filter(pk__in=attrs["contact_ids"])}
         if attrs["contact_list_ids"]:
-            for c in Contact.objects.filter(lists__id__in=attrs["contact_list_ids"]).distinct():
+            for c in mine.filter(lists__id__in=attrs["contact_list_ids"], lists__owner=ws).distinct():
                 picked.setdefault(c.phone, c)
         pasted, bad = [], []
         for token in filter(None, (t.strip() for t in re.split(r"[\n,;]+", attrs.get("numbers") or ""))):
@@ -175,9 +182,10 @@ class CampaignCreateSerializer(serializers.Serializer):
             more = " …" if len(bad) > 5 else ""
             raise serializers.ValidationError({"numbers": f"These don't look like phone numbers: {', '.join(bad[:5])}{more}"})
         if pasted:
-            known = set(Contact.objects.filter(phone__in=pasted).values_list("phone", flat=True))
-            Contact.objects.bulk_create([Contact(phone=p) for p in dict.fromkeys(pasted) if p not in known], ignore_conflicts=True)
-            saved = {c.phone: c for c in Contact.objects.filter(phone__in=pasted)}
+            known = set(mine.filter(phone__in=pasted).values_list("phone", flat=True))
+            Contact.objects.bulk_create([Contact(owner=ws, phone=p) for p in dict.fromkeys(pasted) if p not in known],
+                                        ignore_conflicts=True)
+            saved = {c.phone: c for c in mine.filter(phone__in=pasted)}
             for p in pasted:
                 picked.setdefault(p, saved[p])
         usable = [c for c in picked.values() if not c.opted_out]
@@ -193,7 +201,7 @@ class CampaignCreateSerializer(serializers.Serializer):
         if not validated.get("name"):
             first_line = msg.strip().splitlines()[0] if msg.strip() else (validated["media"].original_name if validated["media"] else "")
             validated["name"] = first_line.strip("*_~` ")[:120]
-        campaign = Campaign.objects.create(created_by=self.context["request"].user, **validated)
+        campaign = Campaign.objects.create(owner=self.workspace, created_by=self.context["request"].user, **validated)
         campaign.sender_accounts.set(senders)
         # The sending account is chosen when each message goes out, following the rotation settings.
         CampaignTarget.objects.bulk_create([

@@ -9,6 +9,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from apps.core.csvutil import csv_response
+from apps.core.workspace import workspace_of
 
 from .models import CampaignTarget
 
@@ -34,8 +35,8 @@ def date_range(params):
     return d_from, d_to, start, end
 
 
-def finished_targets(start, end):
-    return CampaignTarget.objects.filter(finished_at__gte=start, finished_at__lt=end)
+def finished_targets(request, start, end):
+    return CampaignTarget.objects.filter(campaign__owner=workspace_of(request.user), finished_at__gte=start, finished_at__lt=end)
 
 
 COUNTS = {
@@ -51,7 +52,7 @@ def summary(request):
         d_from, d_to, start, end = date_range(request.query_params)
     except ValueError as e:
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-    qs = finished_targets(start, end)
+    qs = finished_targets(request, start, end)
     totals = qs.aggregate(**COUNTS)
 
     by_day = {
@@ -101,4 +102,4 @@ def export(request):
         d_from, d_to, start, end = date_range(request.query_params)
     except ValueError as e:
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-    return csv_response(f"delivery-report_{d_from}_to_{d_to}.csv", TARGET_HEADER, target_rows(finished_targets(start, end)))
+    return csv_response(f"delivery-report_{d_from}_to_{d_to}.csv", TARGET_HEADER, target_rows(finished_targets(request, start, end)))

@@ -16,3 +16,6 @@ backend/.celerybeat-schedule*
 # builds
 frontend/dist/
 *.tsbuildinfo
+
+# Database backups (contain contacts and secrets)
+backups/

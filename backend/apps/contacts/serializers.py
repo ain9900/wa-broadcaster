@@ -1,12 +1,19 @@
 from rest_framework import serializers
 
 from apps.core.models import AppSettings
+from apps.core.workspace import workspace_of
 
 from .models import Contact, ContactList
 from .phones import normalize
 
 
-class ContactListSerializer(serializers.ModelSerializer):
+class WorkspaceSerializer(serializers.ModelSerializer):
+    @property
+    def workspace(self):
+        return workspace_of(self.context["request"].user)
+
+
+class ContactListSerializer(WorkspaceSerializer):
     contact_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
@@ -17,11 +24,23 @@ class ContactListSerializer(serializers.ModelSerializer):
         v = v.strip()
         if not v:
             raise serializers.ValidationError("Give the list a name.")
+        clash = ContactList.objects.filter(owner=self.workspace, name__iexact=v)
+        if self.instance:
+            clash = clash.exclude(pk=self.instance.pk)
+        if clash.exists():
+            raise serializers.ValidationError(f'You already have a list called "{v}".')
         return v
 
 
-class ContactSerializer(serializers.ModelSerializer):
-    lists = serializers.PrimaryKeyRelatedField(many=True, queryset=ContactList.objects.all(), required=False)
+class OwnListsField(serializers.PrimaryKeyRelatedField):
+    """Only lists in the request's workspace can be picked."""
+
+    def get_queryset(self):
+        return ContactList.objects.filter(owner=workspace_of(self.context["request"].user))
+
+
+class ContactSerializer(WorkspaceSerializer):
+    lists = OwnListsField(many=True, required=False)
 
     class Meta:
         model = Contact
@@ -30,10 +49,10 @@ class ContactSerializer(serializers.ModelSerializer):
         extra_kwargs = {"phone": {"validators": []}}  # uniqueness is checked after normalising
 
     def validate_phone(self, v):
-        phone = normalize(v, AppSettings.load().default_country_code)
+        phone = normalize(v, AppSettings.load(self.workspace).default_country_code)
         if not phone:
             raise serializers.ValidationError("That doesn't look like a phone number. Include the country code, e.g. +8801712345678.")
-        clash = Contact.objects.filter(phone=phone)
+        clash = Contact.objects.filter(owner=self.workspace, phone=phone)
         if self.instance:
             clash = clash.exclude(pk=self.instance.pk)
         if clash.exists():

@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator, RegexValidator
 from django.db import models
 
@@ -11,7 +12,9 @@ class Rotation(models.TextChoices):
 
 
 class AppSettings(models.Model):
-    """Workspace-wide defaults. Always a single row (pk=1)."""
+    """One user's sending defaults. Each user has their own row, created on first use."""
+
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="app_settings")
 
     daily_limit = models.PositiveIntegerField(
         default=0, validators=[MaxValueValidator(10000)], help_text="Messages per account per day. 0 = no limit."
@@ -42,11 +45,29 @@ class AppSettings(models.Model):
     def __str__(self):
         return "Settings"
 
-    def save(self, *args, **kwargs):
-        self.pk = 1
-        super().save(*args, **kwargs)
-
     @classmethod
-    def load(cls):
-        obj, _ = cls.objects.get_or_create(pk=1)
+    def load(cls, user):
+        obj, _ = cls.objects.get_or_create(user=user)
         return obj
+
+
+class TeamMember(models.Model):
+    """A user who works inside someone else's workspace (an employee or support assistant).
+
+    They see and do everything the workspace owner does, except managing the team and passwords.
+    """
+
+    class Role(models.TextChoices):
+        EMPLOYEE = "employee", "Employee"
+        SUPPORT = "support", "Support assistant"
+
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="team_membership")
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="team_members")
+    role = models.CharField(max_length=20, choices=Role.choices, default=Role.EMPLOYEE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.user} ({self.get_role_display()} of {self.owner})"

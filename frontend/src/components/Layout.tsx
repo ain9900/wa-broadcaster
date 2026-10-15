@@ -12,7 +12,7 @@ const NAV = [
   { to: '/contacts', label: 'Contacts' },
   { to: '/reports', label: 'Reports' },
   { to: '/accounts', label: 'Accounts' },
-  { to: '/library', label: 'Templates & sets' },
+  { to: '/library', label: 'Templates' },
   { to: '/settings', label: 'Settings' },
 ];
 
@@ -41,7 +41,10 @@ export default function Layout() {
           ))}
         </nav>
         <div className="sidebar-foot">
-          <span className="small">Signed in as <b>{user?.username}</b></span>
+          <span className="small">
+            Signed in as <b>{user?.username}</b>
+            {user && !user.is_owner && <><br />{user.role === 'support' ? 'Support assistant' : 'Employee'} in {user.workspace}'s workspace</>}
+          </span>
           <button type="button" className="ghost" onClick={logout}>Sign out</button>
         </div>
       </aside>

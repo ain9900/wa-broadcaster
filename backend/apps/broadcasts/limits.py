@@ -30,4 +30,4 @@ def sent_today(account_id: int) -> int:
 
 def limit_for(account) -> int:
     """0 = unlimited."""
-    return account.daily_limit if account.daily_limit is not None else AppSettings.load().daily_limit
+    return account.daily_limit if account.daily_limit is not None else AppSettings.load(account.owner).daily_limit

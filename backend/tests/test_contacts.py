@@ -5,6 +5,7 @@ from apps.broadcasts.models import Campaign, CampaignTarget
 from apps.contacts.models import Contact, ContactList
 from apps.contacts.phones import normalize, parse_lines
 from apps.whatsapp.models import WhatsAppAccount
+from tests.helpers import me
 
 pytestmark = pytest.mark.django_db
 T = CampaignTarget.Status
@@ -26,11 +27,39 @@ def test_normalize(raw, cc, expected):
 def test_parse_lines_handles_csv_and_names_in_either_column():
     rows = list(parse_lines("name,phone\nRahim, 01712345678\n+8801812345678;Karim\nnot a number", "880"))
     parsed = [(phone, name) for _, phone, name, _ in rows]
-    assert parsed == [(None, "name phone"), ("8801712345678", "Rahim"), ("8801812345678", "Karim"), (None, "not a number")]
+    # The header row is used to find the columns, not imported; lines in another layout still work.
+    assert parsed == [("8801712345678", "Rahim"), ("8801812345678", "Karim"), (None, "not a number")]
+
+
+def test_parse_lines_without_header_takes_first_text_as_name():
+    rows = list(parse_lines("Rahim, 01712345678\n+8801812345678;Karim;Dhaka\nnot a number", "880"))
+    assert [(p, n) for _, p, n, _ in rows] == [("8801712345678", "Rahim"), ("8801812345678", "Karim"), (None, "not a number")]
+
+
+def test_parse_lines_reads_only_name_and_phone_columns():
+    text = (
+        '﻿Name,Given Name,Phone 1 - Type,Phone 1 - Value,Country,Group Membership\n'
+        'Noyon Hardware,Noyon,Mobile,01936603001,Bangladesh,"Retailer Division: Bogura Retailers, Bogura - 1"\n'
+        'A M Electric,A M,Mobile,+880 1715-843802,Bangladesh,Bogura\n'
+    )
+    info = {}
+    rows = list(parse_lines(text, "880", info))
+    assert [(p, n) for _, p, n, _ in rows] == [("8801936603001", "Noyon Hardware"), ("8801715843802", "A M Electric")]
+    assert info == {"phone_column": "Phone 1 - Type, Phone 1 - Value", "name_column": "Name"}
+
+
+@pytest.mark.parametrize("header,line,expected", [
+    ("First Name;Last Name;Mobile", "Rahim;Uddin;01712345678", ("8801712345678", "Rahim Uddin")),
+    ("নাম\tমোবাইল নম্বর", "রহিম\t01712345678", ("8801712345678", "রহিম")),
+    ("Customer Name,Company Name,Phone Number", "Karim,Karim Traders,01812345678", ("8801812345678", "Karim")),
+])
+def test_parse_lines_header_variants(header, line, expected):
+    (_, phone, name, _), = parse_lines(f"{header}\n{line}", "880")
+    assert (phone, name) == expected
 
 
 def test_import_creates_updates_and_lists(client):
-    Contact.objects.create(phone="8801712345678", name="Old")
+    Contact.objects.create(owner=me(), phone="8801712345678", name="Old")
     r = client.post("/api/contacts/import/", {
         "text": "name,phone\nRahim,01712345678\nKarim,01812345678\nKarim again,01812345678\ngarbage",
         "new_list": "Customers",
@@ -49,9 +78,9 @@ def test_contact_create_normalizes_and_rejects_duplicates(client):
 
 
 def test_bulk_opt_out_and_list_membership(client):
-    a = Contact.objects.create(phone="8801700000001")
-    b = Contact.objects.create(phone="8801700000002")
-    lst = ContactList.objects.create(name="VIP")
+    a = Contact.objects.create(owner=me(), phone="8801700000001")
+    b = Contact.objects.create(owner=me(), phone="8801700000002")
+    lst = ContactList.objects.create(owner=me(), name="VIP")
     client.post("/api/contacts/bulk/", {"action": "add_to_list", "ids": [a.id, b.id], "list_id": lst.id}, format="json")
     client.post("/api/contacts/bulk/", {"action": "opt_out", "ids": [b.id]}, format="json")
     lists = client.get("/api/contact-lists/").json()
@@ -60,15 +89,15 @@ def test_bulk_opt_out_and_list_membership(client):
 
 
 def second_account():
-    return WhatsAppAccount.objects.create(label="Shop", provider="fake", status="connected", phone="8801999999999")
+    return WhatsAppAccount.objects.create(owner=me(), label="Shop", provider="fake", status="connected", phone="8801999999999")
 
 
 def test_campaign_to_contacts_collects_recipients_and_skips_opted_out(client, account, provider):
     shop = second_account()
-    lst = ContactList.objects.create(name="Customers")
+    lst = ContactList.objects.create(owner=me(), name="Customers")
     for i in range(3):
-        lst.contacts.add(Contact.objects.create(phone=f"88017000000{i}", name=f"C{i}"))
-    Contact.objects.create(phone="8801700000099", opted_out=True).lists.add(lst)
+        lst.contacts.add(Contact.objects.create(owner=me(), phone=f"88017000000{i}", name=f"C{i}"))
+    Contact.objects.create(owner=me(), phone="8801700000099", opted_out=True).lists.add(lst)
 
     r = client.post("/api/campaigns/", {
         "message": "Hi {name|friend}!",
@@ -84,7 +113,7 @@ def test_campaign_to_contacts_collects_recipients_and_skips_opted_out(client, ac
 
 
 def test_campaign_needs_a_sender(client, account):
-    c = Contact.objects.create(phone="8801700000001")
+    c = Contact.objects.create(owner=me(), phone="8801700000001")
     r = client.post("/api/campaigns/", {"message": "x", "contact_ids": [c.id]}, format="json")
     assert r.status_code == 400 and "account" in r.json()["error"]
 
@@ -95,7 +124,7 @@ def test_bad_pasted_numbers_are_reported(client, account):
 
 
 def make_contact_campaign(account, contacts, message="Hello {name|there}"):
-    c = Campaign.objects.create(message=message, delay_min_seconds=0, delay_max_seconds=0, batch_size=0)
+    c = Campaign.objects.create(owner=me(), message=message, delay_min_seconds=0, delay_max_seconds=0, batch_size=0)
     c.sender_accounts.set([account])
     for i, ct in enumerate(contacts):
         CampaignTarget.objects.create(campaign=c, contact=ct, recipient_jid=f"{ct.phone}@s.whatsapp.net",
@@ -104,10 +133,10 @@ def make_contact_campaign(account, contacts, message="Hello {name|there}"):
 
 
 def test_runner_personalizes_checks_numbers_and_honours_late_opt_out(provider, account):
-    rahim = Contact.objects.create(phone="8801700000001", name="Rahim")
-    noname = Contact.objects.create(phone="8801700000002")
-    ghost = Contact.objects.create(phone="8801700000003", name="Ghost")
-    late = Contact.objects.create(phone="8801700000004", name="Late")
+    rahim = Contact.objects.create(owner=me(), phone="8801700000001", name="Rahim")
+    noname = Contact.objects.create(owner=me(), phone="8801700000002")
+    ghost = Contact.objects.create(owner=me(), phone="8801700000003", name="Ghost")
+    late = Contact.objects.create(owner=me(), phone="8801700000004", name="Late")
     provider.not_on_whatsapp = {"8801700000003"}
     c = make_contact_campaign(account, [rahim, noname, ghost, late])
     Contact.objects.filter(pk=late.pk).update(opted_out=True)  # opted out after the campaign was created
